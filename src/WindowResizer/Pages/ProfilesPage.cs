@@ -37,18 +37,18 @@ namespace WindowResizer
                     return;
                 }
 
-                ConfigFactory.ProfileAdd(result.Trim());
+                ProfilesFactory.ProfileAdd(result.Trim());
             }
         }
 
         private void ProfileSwitch_OnClick(string profileId)
         {
-            if (profileId.Equals(ConfigFactory.Current.ProfileId))
+            if (profileId.Equals(ProfilesFactory.Current.ProfileId))
             {
                 return;
             }
 
-            ConfigFactory.ProfileSwitch(profileId);
+            ProfilesFactory.ProfileSwitch(profileId);
         }
 
         private void ProfileRename_OnClick(string profileId)
@@ -61,13 +61,13 @@ namespace WindowResizer
                     return;
                 }
 
-                ConfigFactory.ProfileRename(profileId, result);
+                ProfilesFactory.ProfileRename(profileId, result);
             }
         }
 
         private void ProfileRemove_OnClick(string profileId)
         {
-            if (!ConfigFactory.ProfileRemove(profileId))
+            if (!ProfilesFactory.ProfileRemove(profileId))
             {
                 Helper.ShowMessageBox("Profile can not be removed.");
             }
@@ -77,10 +77,10 @@ namespace WindowResizer
 
         private void EventsHandle()
         {
-            ConfigFactory.Profiles.ProfileEvents.ProfileAdd += OnProfileAdd;
-            ConfigFactory.Profiles.ProfileEvents.ProfileSwitch += id => OnProfileSwitch(id);
-            ConfigFactory.Profiles.ProfileEvents.ProfileRename += OnProfileRename;
-            ConfigFactory.Profiles.ProfileEvents.ProfileRemove += OnProfileRemove;
+            ProfilesFactory.Profiles.ProfileEvents.ProfileAdd += OnProfileAdd;
+            ProfilesFactory.Profiles.ProfileEvents.ProfileSwitch += id => OnProfileSwitch(id);
+            ProfilesFactory.Profiles.ProfileEvents.ProfileRename += OnProfileRename;
+            ProfilesFactory.Profiles.ProfileEvents.ProfileRemove += OnProfileRemove;
         }
 
         private void OnProfileAdd(string profileId, string profileName)
@@ -93,7 +93,7 @@ namespace WindowResizer
         {
             ResetProfileControlState();
             SetWindowTitle();
-            message = message ?? $"Profile switched to <{ConfigFactory.Current.ProfileName}>.";
+            message = message ?? $"Profile switched to <{ProfilesFactory.Current.ProfileName}>.";
             ReloadConfig(message);
         }
 
@@ -102,7 +102,7 @@ namespace WindowResizer
             var label = ProfilesLayout.Controls[$"ProfileLabel-{profileId}"];
             label.Text = profileName;
 
-            if (profileId.Equals(ConfigFactory.Current.ProfileId))
+            if (profileId.Equals(ProfilesFactory.Current.ProfileId))
             {
                 SetWindowTitle();
             }
@@ -143,7 +143,7 @@ namespace WindowResizer
         private void ReRenderProfiles()
         {
             ClearProfiles();
-            var profiles = ConfigFactory.Profiles.Configs;
+            var profiles = ProfilesFactory.Profiles.Configs;
 
             ProfilesLayout.RowCount = profiles.Count;
 
@@ -227,7 +227,7 @@ namespace WindowResizer
             ProfilesLayout.AutoScroll = false;
             ProfilesLayout.HorizontalScroll.Enabled = false;
 
-            var rowCount = ConfigFactory.Profiles.Configs.Count;
+            var rowCount = ProfilesFactory.Profiles.Configs.Count;
             var scroll = rowCount > _profileMaxHeight / _profileRowHeight;
             ProfilesLayout.AutoSize = !scroll;
             ProfilesLayout.AutoScroll = scroll;
@@ -242,9 +242,9 @@ namespace WindowResizer
 
         private void ResetProfileControlState()
         {
-            foreach (var c in ConfigFactory.Profiles.Configs)
+            foreach (var c in ProfilesFactory.Profiles.Configs)
             {
-                var isCurrent = c.ProfileId.Equals(ConfigFactory.Current.ProfileId);
+                var isCurrent = c.ProfileId.Equals(ProfilesFactory.Current.ProfileId);
 
                 var label = ProfilesLayout.Controls[$"ProfileLabel-{c.ProfileId}"];
                 if (label is null)
@@ -259,7 +259,7 @@ namespace WindowResizer
                 switchBtn.Enabled = !isCurrent;
 
                 var removeBtn = ProfilesLayout.Controls[$"ProfileRemoveBtn-{c.ProfileId}"];
-                removeBtn.Enabled = !isCurrent && ConfigFactory.Profiles.Configs.Count > 1;
+                removeBtn.Enabled = !isCurrent && ProfilesFactory.Profiles.Configs.Count > 1;
             }
         }
     }

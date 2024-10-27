@@ -12,7 +12,7 @@ public class Profiles
     }
 
     [JsonConstructor]
-    public Profiles(string currentProfileId, List<Config> configs)
+    public Profiles(string currentProfileId, List<ProfileConfig> configs)
     {
         CurrentProfileId = currentProfileId;
         Configs = configs;
@@ -20,15 +20,15 @@ public class Profiles
 
     public string CurrentProfileId { get; private set; } = string.Empty;
 
-    public List<Config> Configs { get; private set; } = new();
+    public List<ProfileConfig> Configs { get; private set; } = new();
 
     [JsonIgnore] public const string DefaultProfileName = "default";
 
-    [JsonIgnore] public Config? Current => Get(CurrentProfileId);
+    [JsonIgnore] public ProfileConfig? Current => Get(CurrentProfileId);
 
     [JsonIgnore] public readonly ProfileEvents ProfileEvents = new();
 
-    public Config UseDefault()
+    public ProfileConfig UseDefault()
     {
         Configs.Clear();
         var defaultConfig = Add(DefaultProfileName);
@@ -49,9 +49,9 @@ public class Profiles
         return true;
     }
 
-    public Config Add(string profileName)
+    public ProfileConfig Add(string profileName)
     {
-        var newConfig = Config.NewConfig(profileName);
+        var newConfig = ProfileConfig.NewConfig(profileName);
         Configs.Add(newConfig);
         ProfileEvents.ProfileAdd?.Invoke(newConfig.ProfileId, newConfig.ProfileName);
         return newConfig;
@@ -89,6 +89,11 @@ public class Profiles
         return true;
     }
 
-    private Config? Get(string profileId) =>
+    public void Updated()
+    {
+        ProfileEvents.ProfileConfigUpdated?.Invoke();
+    }
+
+    private ProfileConfig? Get(string profileId) =>
         Configs.FirstOrDefault(i => i.ProfileId.Equals(profileId, StringComparison.Ordinal));
 }

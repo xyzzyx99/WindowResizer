@@ -17,4 +17,19 @@ public class ProfileEvents
     public delegate void ProfileSwitchEvent(string profileId);
 
     public ProfileSwitchEvent? ProfileSwitch;
+
+    public delegate void ProfileConfigUpdatedEvent();
+
+    public ProfileConfigUpdatedEvent? ProfileConfigUpdated;
+}
+
+public class ProfileConfigEvents
+{
+    public delegate void AutoResizeChangedEvent();
+
+    public AutoResizeChangedEvent? AutoResizeChanged;
+
+    public delegate void KeysChangedEvent();
+
+    public KeysChangedEvent? KeysChanged;
 }

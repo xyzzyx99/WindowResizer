@@ -1,13 +1,13 @@
 using System;
-using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using Newtonsoft.Json;
 using WindowResizer.Common.Shortcuts;
+using WindowResizer.Common.Utils;
 
 namespace WindowResizer.Configuration;
 
-public static class ConfigFactory
+public static class ProfilesFactory
 {
     private static string _roamingConfigPath = string.Empty;
     private static string _portableConfigPath = string.Empty;
@@ -25,7 +25,7 @@ public static class ConfigFactory
 
     public static readonly Profiles Profiles = new();
 
-    public static Config Current => GetCurrentConfig();
+    public static ProfileConfig Current => GetCurrentProfile();
 
     #region Config
 
@@ -48,12 +48,26 @@ public static class ConfigFactory
         var p = JsonConvert.DeserializeObject<Profiles>(text);
         if (p?.Configs is null || !p.Configs.Any())
         {
-            MigrateToProfile(path);
-            return;
+            throw new Exception("Could not load config.");
         }
 
         foreach (var config in p.Configs)
         {
+            #region migrate: ensure config id
+
+            if (config.WindowSizes.Any())
+            {
+                foreach (var ws in config.WindowSizes)
+                {
+                    if (string.IsNullOrEmpty(ws.WindowSizeId))
+                    {
+                        ws.WindowSizeId = ConfigHelper.GenerateConfigId();
+                    }
+                }
+            }
+
+            #endregion
+
             Profiles.Configs.Add(config);
         }
 
@@ -66,7 +80,7 @@ public static class ConfigFactory
         new FileInfo(ConfigPath).Directory?.Create();
         File.WriteAllText(ConfigPath, json);
 
-        Current.WindowSizes.ResetBindings();
+        Profiles.Updated();
     }
 
     public static void Move(bool portable)
@@ -89,7 +103,7 @@ public static class ConfigFactory
     public static void UseDefault() =>
         Profiles.UseDefault();
 
-    public static Config ProfileAdd(string profileName)
+    public static ProfileConfig ProfileAdd(string profileName)
     {
         var p = Profiles.Add(profileName);
         Save();
@@ -126,14 +140,14 @@ public static class ConfigFactory
 
     #endregion
 
-    public static Hotkeys? GetKeys(this Config config, HotkeysType type)
+    public static Hotkeys? GetKeys(this ProfileConfig profileConfig, HotkeysType type)
     {
-        return config.Keys.TryGetValue(type, out var k) ? k : null;
+        return profileConfig.Keys.TryGetValue(type, out var k) ? k : null;
     }
 
-    public static Hotkeys SetKeys(this Config config, HotkeysType type, Hotkeys hotkeys)
+    public static Hotkeys SetKeys(this ProfileConfig profileConfig, HotkeysType type, Hotkeys hotkeys)
     {
-        var configKeys = config.GetKeys(type) ?? new Hotkeys();
+        var configKeys = profileConfig.GetKeys(type) ?? new Hotkeys();
         configKeys.ModifierKeys.Clear();
         foreach (var key in hotkeys.ModifierKeys)
         {
@@ -141,11 +155,11 @@ public static class ConfigFactory
         }
 
         configKeys.Key = hotkeys.Key;
-        config.Keys[type] = configKeys;
+        profileConfig.Keys[type] = configKeys;
         return configKeys;
     }
 
-    private static Config GetCurrentConfig()
+    private static ProfileConfig GetCurrentProfile()
     {
         var cur = Profiles.Current;
         if (cur is not null)
@@ -162,59 +176,4 @@ public static class ConfigFactory
         Profiles.Switch(f.ProfileId);
         return f;
     }
-
-    #region migrate config(v1.1.0) to profiles(v1.2.0)
-
-    private static void MigrateToProfile(string path)
-    {
-        Profiles.Configs.Clear();
-
-        var config = LoadOldConfig(path);
-        if (config is not null)
-        {
-            config.ProfileName = Profiles.DefaultProfileName;
-            config.ProfileId = Config.GenerateConfigId();
-            Profiles.Configs.Add(config);
-            Profiles.Switch(config.ProfileId);
-            Save();
-        }
-    }
-
-    private static Config? LoadOldConfig(string path)
-    {
-        var text = File.ReadAllText(path);
-        var c = JsonConvert.DeserializeObject<Config>(text);
-        if (c is null)
-        {
-            return null;
-        }
-
-        var config = new Config();
-        foreach (var key in c.Keys)
-        {
-            config.SetKeys(key.Key, key.Value);
-        }
-
-        config.DisableInFullScreen = c.DisableInFullScreen;
-        config.WindowSizes = c.WindowSizes;
-        config.CheckUpdate = c.CheckUpdate;
-
-        config.Migrate(c);
-
-        if (!config.WindowSizes.Any())
-        {
-            return config;
-        }
-
-        var sortedInstance = new BindingList<WindowSize>(
-            config.WindowSizes
-                .OrderBy(w => w.Name)
-                .ThenBy(w => w.Title)
-                .ToList()
-        );
-        config.WindowSizes = sortedInstance;
-        return config;
-    }
-
-    #endregion
 }

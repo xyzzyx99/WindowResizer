@@ -16,7 +16,7 @@ namespace WindowResizer.Base
 
             try
             {
-                ConfigFactory.Load(configPath);
+                ProfilesFactory.Load(configPath);
                 return true;
             }
             catch (Exception)

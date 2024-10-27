@@ -1,6 +1,4 @@
-using System.ComponentModel;
 using System.Drawing;
-using System.Linq;
 using System.Windows.Forms;
 using WindowResizer.Configuration;
 using WindowResizer.Utils;
@@ -15,7 +13,7 @@ namespace WindowResizer
             ProcessesGridLayout();
 
             ProcessesGrid.AutoGenerateColumns = false;
-            ProcessesGrid.DataSource = ConfigFactory.Current.GetWindowSizes();
+            ProcessesGrid_UpdateDataSource();
 
             ProcessesGrid.ShowCellToolTips = true;
             ProcessesGrid.CellFormatting += ProcessesGrid_CellFormatting;
@@ -23,6 +21,8 @@ namespace WindowResizer
             ProcessesGrid.CellContentClick += ProcessesGrid_CellContentClick;
             ProcessesGrid.CellValueChanged += ProcessesGrid_CellValueChanged;
             ProcessesGrid.CellMouseEnter += ProcessesGrid_CellMouseEnter;
+
+            ProfilesFactory.Profiles.ProfileEvents.ProfileConfigUpdated += ProcessesGrid_UpdateDataSource;
         }
 
         private void ProcessesGridLayout()
@@ -30,6 +30,9 @@ namespace WindowResizer
             ProcessesGrid.AllowUserToAddRows = false;
             ProcessesGrid.RowTemplate.Height = 50;
             ProcessesGrid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill;
+            ProcessesGrid.RowHeadersBorderStyle = DataGridViewHeaderBorderStyle.None;
+            ProcessesGrid.ColumnHeadersBorderStyle = DataGridViewHeaderBorderStyle.None;
+            ProcessesGrid.CellBorderStyle = DataGridViewCellBorderStyle.None;
             ProcessesGrid.Columns.Clear();
             ProcessesGrid.Columns.Add(new DataGridViewTextBoxColumn
             {
@@ -52,13 +55,10 @@ namespace WindowResizer
                 Name = "Title",
                 DataPropertyName = "Title",
                 HeaderText = "Title",
-                DefaultCellStyle = new DataGridViewCellStyle
-                {
-                    Alignment = DataGridViewContentAlignment.MiddleLeft
-                },
+                DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleLeft },
                 FillWeight = 35,
                 DisplayIndex = 1,
-                Visible = ConfigFactory.Current.EnableResizeByTitle
+                Visible = ProfilesFactory.Current.EnableResizeByTitle
             });
             ProcessesGrid.Columns.Add(new DataGridViewTextBoxColumn
             {
@@ -109,10 +109,7 @@ namespace WindowResizer
                 FillWeight = 8,
                 DisplayIndex = 6,
                 FlatStyle = FlatStyle.Standard,
-                DefaultCellStyle =
-                {
-                    SelectionBackColor = SystemColors.Window,
-                },
+                DefaultCellStyle = { SelectionBackColor = SystemColors.Window, },
             });
 
             ProcessesGrid.Columns.Add(new DataGridViewTextBoxColumn
@@ -123,10 +120,7 @@ namespace WindowResizer
                 FillWeight = 8,
                 DisplayIndex = 7,
                 ValueType = typeof(int),
-                DefaultCellStyle =
-                {
-                    SelectionBackColor = SystemColors.Window,
-                },
+                DefaultCellStyle = { SelectionBackColor = SystemColors.Window, },
             });
 
             ProcessesGrid.Columns.Add(new DataGridViewButtonColumn
@@ -181,27 +175,30 @@ namespace WindowResizer
 
         private void ProcessesGrid_CellValueChanged(object sender, DataGridViewCellEventArgs e)
         {
-            if (e.ColumnIndex == ProcessesGrid.Columns["AutoResizeDelay"]?.Index)
+            var windowSize = GetRowWindowSize(e.RowIndex);
+            if (windowSize == null)
             {
-                DataGridViewCell cell = ProcessesGrid.Rows[e.RowIndex].Cells[e.ColumnIndex];
-                var val = (int)cell.Value;
-                val = val < 0 ? 0 : val;
-                val = val > MaxAutoResizeDelay ? MaxAutoResizeDelay : val;
-                cell.Value = val;
-
-                // same delay for process
-                var process = ProcessesGrid.Rows[e.RowIndex].Cells[0].Value.ToString();
-
-                if (ProcessesGrid.DataSource is BindingList<WindowSize> data)
-                {
-                    foreach (var ws in data.Where(i => i.Name.Equals(process)))
-                    {
-                        ws.AutoResizeDelay = val;
-                    }
-                }
+                return;
             }
 
-            ConfigFactory.Save();
+            if (e.ColumnIndex == ProcessesGrid.Columns["AutoResize"]?.Index)
+            {
+                ProfilesFactory.Current.UpdateAutoResize(windowSize.WindowSizeId, windowSize.AutoResize, null);
+            }
+            else if (e.ColumnIndex == ProcessesGrid.Columns["AutoResizeDelay"]?.Index)
+            {
+                var val = windowSize.AutoResizeDelay;
+                val = val < 0 ? 0 : val;
+                val = val > MaxAutoResizeDelay ? MaxAutoResizeDelay : val;
+
+                ProfilesFactory.Current.UpdateAutoResize(windowSize.WindowSizeId, null, val);
+            }
+            else
+            {
+                ProfilesFactory.Current.UpdateWindowSize(windowSize);
+            }
+
+            ProfilesFactory.Save();
         }
 
         private void ProcessesGrid_CellFormatting(object sender,
@@ -209,14 +206,17 @@ namespace WindowResizer
         {
             DataGridViewCell cell = ProcessesGrid.Rows[e.RowIndex].Cells[e.ColumnIndex];
             if ((e.ColumnIndex == ProcessesGrid.Columns["Name"]?.Index ||
-                    e.ColumnIndex == ProcessesGrid.Columns["Title"]?.Index) && e.Value != null && e.Value.ToString().Length > 20)
+                 e.ColumnIndex == ProcessesGrid.Columns["Title"]?.Index) && e.Value != null &&
+                e.Value.ToString().Length > 20)
             {
                 cell.ToolTipText = cell.Value.ToString();
             }
 
-            if ((e.ColumnIndex >= ProcessesGrid.Columns["Top"]?.Index && e.ColumnIndex <= ProcessesGrid.Columns["Bottom"]?.Index))
+            if (e.ColumnIndex >= ProcessesGrid.Columns["Top"]?.Index &&
+                e.ColumnIndex <= ProcessesGrid.Columns["Bottom"]?.Index &&
+                e.RowIndex < ProfilesFactory.Current.WindowSizes.Count)
             {
-                var r = ConfigFactory.Current.WindowSizes[e.RowIndex];
+                var r = ProfilesFactory.Current.WindowSizes[e.RowIndex];
                 if (r.State == Common.Windows.WindowState.Maximized)
                 {
                     cell.Style.ForeColor = SystemColors.GradientInactiveCaption;
@@ -228,8 +228,9 @@ namespace WindowResizer
 
         private void ProcessesGrid_CellMouseEnter(object sender, DataGridViewCellEventArgs e)
         {
-            if (e.RowIndex == -1)
+            if (e.RowIndex < 0)
             {
+                ProcessesGrid.Cursor = Cursors.Default;
                 return;
             }
 
@@ -253,27 +254,59 @@ namespace WindowResizer
 
         private void ProcessesGrid_CellClick(object sender, DataGridViewCellEventArgs e)
         {
+            var windowSize = GetRowWindowSize(e.RowIndex);
+            if (windowSize == null)
+            {
+                return;
+            }
+
             if (e.ColumnIndex == ProcessesGrid.Columns["Remove"]?.Index &&
                 e.RowIndex >= 0 &&
-                e.RowIndex < ConfigFactory.Current.WindowSizes.Count)
+                e.RowIndex < ProfilesFactory.Current.WindowSizes.Count)
             {
-                ConfigFactory.Current.WindowSizes.RemoveAt(e.RowIndex);
-                ConfigFactory.Save();
+                ProfilesFactory.Current.RemoveWindowSize(windowSize.WindowSizeId);
+                ProfilesFactory.Save();
             }
         }
 
+        /// <summary>
+        /// rebind, need some optimization
+        /// </summary>
         private void ProcessesGrid_UpdateDataSource()
         {
-            ProcessesGrid.DataSource = ConfigFactory.Current.GetWindowSizes();
+            var bindingSource = new BindingSource();
+            foreach (var item in ProfilesFactory.Current.GetWindowSizes())
+            {
+                bindingSource.Add(item);
+            }
+
+            ProcessesGrid.DataSource = bindingSource;
 
             if (ProcessesGrid.Columns["Title"] != null)
             {
-                ProcessesGrid.Columns["Title"].Visible = ConfigFactory.Current.EnableResizeByTitle;
+                ProcessesGrid.Columns["Title"].Visible = ProfilesFactory.Current.EnableResizeByTitle;
             }
 
             if (ProcessesGrid.Columns["AutoResizeDelay"] != null)
             {
-                ProcessesGrid.Columns["AutoResizeDelay"].Visible = ConfigFactory.Current.EnableAutoResizeDelay;
+                ProcessesGrid.Columns["AutoResizeDelay"].Visible = ProfilesFactory.Current.EnableAutoResizeDelay;
+            }
+        }
+
+        private WindowSize GetRowWindowSize(int rowIndex)
+        {
+            try
+            {
+                if (rowIndex < 0 || !(ProcessesGrid.Rows[rowIndex].DataBoundItem is WindowSize windowSize))
+                {
+                    return null;
+                }
+
+                return windowSize;
+            }
+            catch
+            {
+                return null;
             }
         }
     }

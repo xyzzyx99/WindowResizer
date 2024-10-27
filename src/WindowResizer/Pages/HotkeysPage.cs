@@ -66,60 +66,56 @@ namespace WindowResizer
 
         private void CheckBoxesInit()
         {
-            DisableInFullScreenCheckBox.Checked = ConfigFactory.Current.DisableInFullScreen;
+            DisableInFullScreenCheckBox.Checked = ProfilesFactory.Current.DisableInFullScreen;
             DisableInFullScreenCheckBox.CheckedChanged += DisableInFullScreen_CheckedChanged;
             Helper.SetToolTip(DisableInFullScreenCheckBox, "Disable when current window is in fullscreen.");
 
-            IncludeMinimizeCheckBox.Checked = ConfigFactory.Current.RestoreAllIncludeMinimized;
+            IncludeMinimizeCheckBox.Checked = ProfilesFactory.Current.RestoreAllIncludeMinimized;
             IncludeMinimizeCheckBox.CheckedChanged += IncludeMinimized_CheckedChanged;
             Helper.SetToolTip(IncludeMinimizeCheckBox, "Include minimized windows when restoring all.");
 
-            NotifyOnSavedCheckBox.Checked = ConfigFactory.Current.NotifyOnSaved;
+            NotifyOnSavedCheckBox.Checked = ProfilesFactory.Current.NotifyOnSaved;
             NotifyOnSavedCheckBox.CheckedChanged += NotifyOnSaved_CheckedChanged;
             Helper.SetToolTip(NotifyOnSavedCheckBox, "Show notification when save windows.");
 
-            ResizeByTitleCheckbox.Checked = ConfigFactory.Current.EnableResizeByTitle;
+            ResizeByTitleCheckbox.Checked = ProfilesFactory.Current.EnableResizeByTitle;
             ResizeByTitleCheckbox.CheckedChanged += ResizeByTitle_CheckedChanged;
             Helper.SetToolTip(ResizeByTitleCheckbox, "Turn On/Off save/resize window according to the different titles of the same process.");
 
-            AutoResizeDelayCheckbox.Checked = ConfigFactory.Current.EnableAutoResizeDelay;
+            AutoResizeDelayCheckbox.Checked = ProfilesFactory.Current.EnableAutoResizeDelay;
             AutoResizeDelayCheckbox.CheckedChanged += AutoResizeDelay_CheckedChanged;
             Helper.SetToolTip(AutoResizeDelayCheckbox, "Turn On/Off auto resize delay.");
         }
 
         private void DisableInFullScreen_CheckedChanged(object sender, EventArgs e)
         {
-            ConfigFactory.Current.DisableInFullScreen = DisableInFullScreenCheckBox.Checked;
-            ConfigFactory.Save();
+            ProfilesFactory.Current.DisableInFullScreen = DisableInFullScreenCheckBox.Checked;
+            ProfilesFactory.Save();
         }
 
         private void IncludeMinimized_CheckedChanged(object sender, EventArgs e)
         {
-            ConfigFactory.Current.RestoreAllIncludeMinimized = IncludeMinimizeCheckBox.Checked;
-            ConfigFactory.Save();
+            ProfilesFactory.Current.RestoreAllIncludeMinimized = IncludeMinimizeCheckBox.Checked;
+            ProfilesFactory.Save();
         }
 
         private void NotifyOnSaved_CheckedChanged(object sender, EventArgs e)
         {
-            ConfigFactory.Current.NotifyOnSaved = NotifyOnSavedCheckBox.Checked;
-            ConfigFactory.Save();
+            ProfilesFactory.Current.NotifyOnSaved = NotifyOnSavedCheckBox.Checked;
+            ProfilesFactory.Save();
         }
 
         private void ResizeByTitle_CheckedChanged(object sender, EventArgs e)
         {
-            ConfigFactory.Current.EnableResizeByTitle = ResizeByTitleCheckbox.Checked;
-            ConfigFactory.Save();
-
-            ProcessesGrid_UpdateDataSource();
+            ProfilesFactory.Current.EnableResizeByTitle = ResizeByTitleCheckbox.Checked;
+            ProfilesFactory.Save();
         }
 
 
         private void AutoResizeDelay_CheckedChanged(object sender, EventArgs e)
         {
-            ConfigFactory.Current.EnableAutoResizeDelay = AutoResizeDelayCheckbox.Checked;
-            ConfigFactory.Save();
-
-            ProcessesGrid_UpdateDataSource();
+            ProfilesFactory.Current.EnableAutoResizeDelay = AutoResizeDelayCheckbox.Checked;
+            ProfilesFactory.Save();
         }
 
         #endregion
@@ -139,7 +135,11 @@ namespace WindowResizer
                 control.Label.Text = GetLabelByType(control.Type);
             }
 
-            DisableInFullScreenCheckBox.Checked = ConfigFactory.Current.DisableInFullScreen;
+            DisableInFullScreenCheckBox.Checked = ProfilesFactory.Current.DisableInFullScreen;
+            IncludeMinimizeCheckBox.Checked = ProfilesFactory.Current.RestoreAllIncludeMinimized;
+            NotifyOnSavedCheckBox.Checked = ProfilesFactory.Current.NotifyOnSaved;
+            AutoResizeDelayCheckbox.Checked = ProfilesFactory.Current.EnableAutoResizeDelay;
+            ResizeByTitleCheckbox.Checked = ProfilesFactory.Current.EnableResizeByTitle;
         }
 
         private void Stop_Recording(object sender, EventArgs e)
@@ -286,7 +286,7 @@ namespace WindowResizer
 
                 SetKeys(_recordingControl.Type, _hotKeys);
 
-                ConfigFactory.Save();
+                ProfilesFactory.Save();
             }
             else
             {
@@ -301,9 +301,9 @@ namespace WindowResizer
             !_hotKeys.Equals(GetKeys(type));
 
         private static void SetKeys(HotkeysType type, Hotkeys hotkeys) =>
-            ConfigFactory.Current.SetKeys(type, hotkeys);
+            ProfilesFactory.Current.SetKeys(type, hotkeys);
 
         private static Hotkeys GetKeys(HotkeysType type) =>
-            ConfigFactory.Current.GetKeys(type);
+            ProfilesFactory.Current.GetKeys(type);
     }
 }

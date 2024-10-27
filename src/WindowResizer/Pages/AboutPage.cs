@@ -28,12 +28,12 @@ namespace WindowResizer
                 StartupCheckBox.Checked = SystemStartup.StartupStatus();
                 StartupCheckBox.CheckedChanged += StartupCheckBox_CheckedChanged;
 
-                UpdateCheckBox.Enabled = !ConfigFactory.PortableMode;
-                UpdateCheckBox.Checked = ConfigFactory.Current.CheckUpdate && !ConfigFactory.PortableMode;
+                UpdateCheckBox.Enabled = !ProfilesFactory.PortableMode;
+                UpdateCheckBox.Checked = ProfilesFactory.Current.CheckUpdate && !ProfilesFactory.PortableMode;
                 UpdateCheckBox.CheckedChanged += UpdateCheckBox_CheckedChanged;
             }
 
-            var portable = ConfigFactory.PortableMode ? " (portable)" : string.Empty;
+            var portable = ProfilesFactory.PortableMode ? " (portable)" : string.Empty;
             VersionLabel.Text = $"{App.Name} {Application.ProductVersion}{portable}";
 
             GithubLinkLabel.Text = ProjectLink;
@@ -54,8 +54,8 @@ namespace WindowResizer
 
         private void UpdateCheckBox_CheckedChanged(object sender, EventArgs e)
         {
-            ConfigFactory.Current.CheckUpdate = UpdateCheckBox.Checked;
-            ConfigFactory.Save();
+            ProfilesFactory.Current.CheckUpdate = UpdateCheckBox.Checked;
+            ProfilesFactory.Save();
         }
 
         private void LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
@@ -77,7 +77,7 @@ namespace WindowResizer
                     File.Delete(saveFileDialog.FileName);
                 }
 
-                File.Copy(ConfigFactory.ConfigPath, saveFileDialog.FileName);
+                File.Copy(ProfilesFactory.ConfigPath, saveFileDialog.FileName);
             }
         }
 
@@ -102,8 +102,8 @@ namespace WindowResizer
 
             try
             {
-                ConfigFactory.Load(filePath);
-                ConfigFactory.Save();
+                ProfilesFactory.Load(filePath);
+                ProfilesFactory.Save();
 
                 ReRenderProfiles();
                 OnProfileSwitch("Configs imported.");
@@ -117,7 +117,7 @@ namespace WindowResizer
 
         private void OpenConfigButton_Click(object sender, EventArgs e)
         {
-            var configFolder = ConfigFactory.PortableMode
+            var configFolder = ProfilesFactory.PortableMode
                 ? Application.StartupPath
                 : Helper.GeApplicationDataPath();
 

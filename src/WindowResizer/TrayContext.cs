@@ -30,21 +30,21 @@ namespace WindowResizer
             {
                 var roamingPath = Path.Combine(Helper.GeApplicationDataPath(), ConfigFile);
                 var portablePath = Path.Combine(App.StartupPath, ConfigFile);
-                ConfigFactory.SetPath(roamingPath, portablePath);
-                ConfigFactory.Load();
+                ProfilesFactory.SetPath(roamingPath, portablePath);
+                ProfilesFactory.Load();
             }
             catch (Exception e)
             {
-                var message = $"Config file {ConfigFactory.ConfigPath} load failed, use default configs.";
+                var message = $"Config file {ProfilesFactory.ConfigPath} load failed, use default configs.";
                 Log.Append($"{message}\nException: {e}");
                 Helper.ShowMessageBox(message, MessageBoxIcon.Warning);
 
-                ConfigFactory.UseDefault();
-                ConfigFactory.Save();
+                ProfilesFactory.UseDefault();
+                ProfilesFactory.Save();
             }
 
             Log.SetLogPath(
-                ConfigFactory.PortableMode
+                ProfilesFactory.PortableMode
                     ? Application.StartupPath
                     : Helper.GeApplicationDataPath());
 
@@ -60,7 +60,7 @@ namespace WindowResizer
 
             SystemStartup();
 
-            if (!App.IsRunningAsUwp && ConfigFactory.Current.CheckUpdate && !ConfigFactory.PortableMode)
+            if (!App.IsRunningAsUwp && ProfilesFactory.Current.CheckUpdate && !ProfilesFactory.PortableMode)
             {
                 _updater = new SquirrelUpdater(ConfirmUpdate, (message, tipsLevel, seconds) =>
                 {
@@ -104,7 +104,7 @@ namespace WindowResizer
         {
             // NotifyIcon text check
             const int TipsMaxLength = 60;
-            var tips =  $"{App.Name}\nv{Application.ProductVersion}\nProfile: {ConfigFactory.Current.ProfileName}";
+            var tips =  $"{App.Name}\nv{Application.ProductVersion}\nProfile: {ProfilesFactory.Current.ProfileName}";
             return tips.Length > TipsMaxLength ? tips.Substring(0, TipsMaxLength) + "..." : tips;
         }
 
@@ -133,9 +133,9 @@ namespace WindowResizer
         {
             ContextMenu.Items.Clear();
 
-            foreach (var c in ConfigFactory.Profiles.Configs)
+            foreach (var c in ProfilesFactory.Profiles.Configs)
             {
-                var isCurrent = c.ProfileId.Equals(ConfigFactory.Current.ProfileId, StringComparison.Ordinal);
+                var isCurrent = c.ProfileId.Equals(ProfilesFactory.Current.ProfileId, StringComparison.Ordinal);
                 var image = isCurrent ? Resources.CheckIcon : null;
                 var m = new ToolStripMenuItem(c.ProfileName, image?.ToBitmap(),
                     (s, e) => OnProfileChange(c.ProfileId));
@@ -203,16 +203,16 @@ namespace WindowResizer
 
         private void ProfilesEventsHandle()
         {
-            ConfigFactory.Profiles.ProfileEvents.ProfileAdd += (i, n) => RebuildContextMenu();
-            ConfigFactory.Profiles.ProfileEvents.ProfileSwitch += i => RebuildContextMenu();
-            ConfigFactory.Profiles.ProfileEvents.ProfileRename += (i, n) => RebuildContextMenu();
-            ConfigFactory.Profiles.ProfileEvents.ProfileRemove += i => RebuildContextMenu();
-            ConfigFactory.Current.WindowSizes.ListChanged += (s, e) => WindowsEventHandle();
+            ProfilesFactory.Profiles.ProfileEvents.ProfileAdd += (i, n) => RebuildContextMenu();
+            ProfilesFactory.Profiles.ProfileEvents.ProfileSwitch += i => RebuildContextMenu();
+            ProfilesFactory.Profiles.ProfileEvents.ProfileRename += (i, n) => RebuildContextMenu();
+            ProfilesFactory.Profiles.ProfileEvents.ProfileRemove += i => RebuildContextMenu();
+            ProfilesFactory.Current.ProfileConfigEvents.AutoResizeChanged += WindowsEventHandle;
         }
 
         private void WindowsEventHandle()
         {
-            var autoSizeEnable = ConfigFactory.Current.WindowSizes.Any(i => i.AutoResize);
+            var autoSizeEnable = ProfilesFactory.Current.WindowSizes.Any(i => i.AutoResize);
             if (_windowEventHandler == null && autoSizeEnable)
             {
                 _windowEventHandler = new WindowEventHandler(OnWindowCreated);
@@ -229,13 +229,13 @@ namespace WindowResizer
         {
             if (Resizer.IsWindowVisible(handle))
             {
-                ResizeWindow(handle, ConfigFactory.Current, null, null, true);
+                ResizeWindow(handle, ProfilesFactory.Current, null, null, true);
             }
         }
 
         private static void OnProfileChange(string profileId)
         {
-            ConfigFactory.ProfileSwitch(profileId);
+            ProfilesFactory.ProfileSwitch(profileId);
         }
 
         private void ReloadConfig(string message)
@@ -328,7 +328,7 @@ namespace WindowResizer
         {
             try
             {
-                if (ConfigFactory.Current.DisableInFullScreen && Resizer.IsForegroundFullScreen())
+                if (ProfilesFactory.Current.DisableInFullScreen && Resizer.IsForegroundFullScreen())
                 {
                     return;
                 }
@@ -351,9 +351,9 @@ namespace WindowResizer
                 if (keys.KeysEqual(e.Modifier, e.Key))
                 {
                     var window = Resizer.GetForegroundHandle();
-                    UpdateOrSaveWindowSize(window, ConfigFactory.Current, OnGetProcessFailed, s =>
+                    UpdateOrSaveWindowSize(window, ProfilesFactory.Current, OnGetProcessFailed, s =>
                     {
-                        if (ConfigFactory.Current.NotifyOnSaved)
+                        if (ProfilesFactory.Current.NotifyOnSaved)
                         {
                             Toast.ShowToast(
                                 title: "Config Saved",
@@ -370,7 +370,7 @@ namespace WindowResizer
                 if (keys.KeysEqual(e.Modifier, e.Key))
                 {
                     var window = Resizer.GetForegroundHandle();
-                    ResizeWindow(window, ConfigFactory.Current, OnGetProcessFailed, OnConfigNoMatch);
+                    ResizeWindow(window, ProfilesFactory.Current, OnGetProcessFailed, OnConfigNoMatch);
                 }
             }
             catch (Exception exception)
@@ -393,11 +393,11 @@ namespace WindowResizer
             {
                 if (Resizer.GetWindowState(window) != WindowState.Minimized)
                 {
-                    UpdateOrSaveWindowSize(window, ConfigFactory.Current, null);
+                    UpdateOrSaveWindowSize(window, ProfilesFactory.Current, null);
                 }
             }
 
-            if (ConfigFactory.Current.NotifyOnSaved)
+            if (ProfilesFactory.Current.NotifyOnSaved)
             {
                 Toast.ShowToast(
                     title: "Config Saved",
@@ -411,7 +411,7 @@ namespace WindowResizer
 
         private void RestoreAll()
         {
-            ResizeAllWindow(ConfigFactory.Current, null);
+            ResizeAllWindow(ProfilesFactory.Current, null);
         }
 
         #endregion

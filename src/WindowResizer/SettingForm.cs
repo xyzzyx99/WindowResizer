@@ -52,7 +52,7 @@ namespace WindowResizer
 
         private void SetWindowTitle()
         {
-            Text = $"{App.Name} - Setting  ::  {ConfigFactory.Current.ProfileName}";
+            Text = $"{App.Name} - Setting  ::  {ProfilesFactory.Current.ProfileName}";
         }
 
         public delegate void ConfigReloadEvent(string message);
@@ -63,7 +63,7 @@ namespace WindowResizer
         {
             HotkeysPageReload();
             ConfigReload(message);
-            ProcessesGrid.DataSource = ConfigFactory.Current.WindowSizes;
+            ProcessesGrid.DataSource = ProfilesFactory.Current.WindowSizes;
         }
 
         public void ShowFront()

@@ -93,7 +93,7 @@ public static class WindowCmd
         public string Result { get; set; } = string.Empty;
     }
 
-    private static Config? LoadConfig(string? configPath, string? profileName, Action<string>? onError)
+    private static ProfileConfig? LoadConfig(string? configPath, string? profileName, Action<string>? onError)
     {
         if (!ConfigUtils.Load(configPath, onError))
         {
@@ -102,10 +102,10 @@ public static class WindowCmd
 
         if (string.IsNullOrEmpty(profileName))
         {
-            return ConfigFactory.Current;
+            return ProfilesFactory.Current;
         }
 
-        var p = ConfigFactory.Profiles.Configs.FirstOrDefault(i =>
+        var p = ProfilesFactory.Profiles.Configs.FirstOrDefault(i =>
             i.ProfileName.Equals(profileName, StringComparison.OrdinalIgnoreCase));
         if (p is null)
         {

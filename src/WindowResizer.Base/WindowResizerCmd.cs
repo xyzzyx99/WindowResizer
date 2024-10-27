@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using WindowResizer.Configuration;
@@ -44,7 +44,7 @@ public static class WindowResizerCmd
                 {
                     targets.Add(handler);
                 }
-                else if (!string.IsNullOrWhiteSpace(title) && t.Contains(title))
+                else if (!string.IsNullOrWhiteSpace(title) && t!.Contains(title))
                 {
                     targets.Add(handler);
                 }
@@ -71,7 +71,7 @@ public static class WindowResizerCmd
         return profile is not null && ResizeAllWindow(profile, onError);
     }
 
-    private static Config? LoadConfig(string? configPath, string? profileName, Action<string>? onError)
+    private static ProfileConfig? LoadConfig(string? configPath, string? profileName, Action<string>? onError)
     {
         if (!ConfigUtils.Load(configPath, onError))
         {
@@ -80,10 +80,10 @@ public static class WindowResizerCmd
 
         if (string.IsNullOrEmpty(profileName))
         {
-            return ConfigFactory.Current;
+            return ProfilesFactory.Current;
         }
 
-        var p = ConfigFactory.Profiles.Configs.FirstOrDefault(i =>
+        var p = ProfilesFactory.Profiles.Configs.FirstOrDefault(i =>
             i.ProfileName.Equals(profileName, StringComparison.OrdinalIgnoreCase));
         if (p is null)
         {

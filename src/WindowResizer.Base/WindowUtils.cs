@@ -16,13 +16,13 @@ public static class WindowUtils
     ///     Resize window
     /// </summary>
     /// <param name="handle"></param>
-    /// <param name="config"></param>
+    /// <param name="profileConfig"></param>
     /// <param name="onFailed"></param>
     /// <param name="onConfigNoMatch"></param>
     /// <param name="onlyAuto"></param>
     public static void ResizeWindow(
         IntPtr handle,
-        Config config,
+        ProfileConfig profileConfig,
         Action<Process, Exception>? onFailed,
         Action<string, string>? onConfigNoMatch,
         bool onlyAuto = false)
@@ -35,9 +35,9 @@ public static class WindowUtils
         if (string.IsNullOrWhiteSpace(processName)) return;
 
         // add delay to get window title on auto resizing
-        if (config.EnableAutoResizeDelay && onlyAuto)
+        if (profileConfig.EnableAutoResizeDelay && onlyAuto)
         {
-            var autoWindow = config.WindowSizes.FirstOrDefault(w => w.Name.Equals(processName, StringComparison.OrdinalIgnoreCase));
+            var autoWindow = profileConfig.WindowSizes.FirstOrDefault(w => w.Name.Equals(processName, StringComparison.OrdinalIgnoreCase));
             if (autoWindow is null)
             {
                 return;
@@ -50,7 +50,7 @@ public static class WindowUtils
         }
 
         var windowTitle = Resizer.GetWindowTitle(handle) ?? string.Empty;
-        var match = GetMatchWindowSize(config.WindowSizes, processName, windowTitle, config.EnableResizeByTitle, onlyAuto);
+        var match = GetMatchWindowSize(profileConfig.WindowSizes, processName, windowTitle, profileConfig.EnableResizeByTitle, onlyAuto);
         if (!match.NoMatch)
         {
             MoveMatchWindow(match, handle);
@@ -61,7 +61,7 @@ public static class WindowUtils
         }
     }
 
-    public static bool ResizeAllWindow(Config profile, Action<string>? onError)
+    public static bool ResizeAllWindow(ProfileConfig profile, Action<string>? onError)
     {
         var windows = Resizer.GetOpenWindows();
         windows.Reverse();
@@ -82,12 +82,12 @@ public static class WindowUtils
     ///     Update or save window size
     /// </summary>
     /// <param name="handle"></param>
-    /// <param name="config"></param>
+    /// <param name="profileConfig"></param>
     /// <param name="onFailed"></param>
     /// <param name="onSuccess"></param>
     public static void UpdateOrSaveWindowSize(
         IntPtr handle,
-        Config config,
+        ProfileConfig profileConfig,
         Action<Process, Exception>? onFailed,
         Action<string>? onSuccess = null)
     {
@@ -97,10 +97,10 @@ public static class WindowUtils
         }
 
         var windowTitle = Resizer.GetWindowTitle(handle);
-        var match = GetMatchWindowSize(config.WindowSizes, processName, windowTitle, config.EnableResizeByTitle);
+        var match = GetMatchWindowSize(profileConfig.WindowSizes, processName, windowTitle, profileConfig.EnableResizeByTitle);
 
         var place = Resizer.GetPlacement(handle);
-        UpdateOrSaveConfig(match, processName, windowTitle, place, config.EnableResizeByTitle);
+        UpdateOrSaveConfig(match, processName, windowTitle, place, profileConfig.EnableResizeByTitle);
         onSuccess?.Invoke(processName);
     }
 
@@ -128,7 +128,7 @@ public static class WindowUtils
     }
 
     public static Hotkeys? GetKeys(HotkeysType type) =>
-        ConfigFactory.Current.GetKeys(type);
+        ProfilesFactory.Current.GetKeys(type);
 
     #region private functions
 
@@ -245,7 +245,7 @@ public static class WindowUtils
                 match.WildcardMatch.MaximizedPosition = placement.MaximizedPosition;
             }
 
-            ConfigFactory.Save();
+            ProfilesFactory.Save();
             return;
         }
 
@@ -273,7 +273,7 @@ public static class WindowUtils
                 });
             }
 
-            ConfigFactory.Save();
+            ProfilesFactory.Save();
             return;
         }
 
@@ -331,7 +331,7 @@ public static class WindowUtils
             });
         }
 
-        ConfigFactory.Save();
+        ProfilesFactory.Save();
     }
 
     private static void MoveWindow(IntPtr handle, WindowSize match)
@@ -352,7 +352,7 @@ public static class WindowUtils
 
     private static void InsertOrder(WindowSize item)
     {
-        var list = ConfigFactory.Current.WindowSizes;
+        var list = ProfilesFactory.Current.WindowSizes;
         var backing = list.ToList();
         backing.Add(item);
         var index = backing.OrderBy(l => l.Name).ThenBy(l => l.Title).ToList().IndexOf(item);

@@ -1,11 +1,14 @@
 using System;
 using Newtonsoft.Json;
+using WindowResizer.Common.Utils;
 using WindowResizer.Common.Windows;
 
 namespace WindowResizer.Configuration;
 
-public class WindowSize : IComparable<WindowSize>
+public class WindowSize
 {
+    public string WindowSizeId { get; set; } = ConfigHelper.GenerateConfigId();
+
     public string Name { get; set; } = String.Empty;
 
     public string Title { get; set; } = String.Empty;
@@ -19,13 +22,7 @@ public class WindowSize : IComparable<WindowSize>
     public bool AutoResize { get; set; }
 
     // AutoResize Delay Milliseconds
-    public int AutoResizeDelay { get; set; } = 0;
-
-    public int CompareTo(WindowSize? other)
-    {
-        var c = string.Compare(other?.Name ?? String.Empty, Name, StringComparison.Ordinal);
-        return c == 0 ? string.Compare(other?.Title ?? String.Empty, Title, StringComparison.Ordinal) : c;
-    }
+    public int AutoResizeDelay { get; set; }
 
     #region properties
 
@@ -35,10 +32,7 @@ public class WindowSize : IComparable<WindowSize>
         get { return Rect.Top; }
         set
         {
-            Rect = Rect with
-            {
-                Top = value
-            };
+            Rect = Rect with { Top = value };
         }
     }
 
@@ -48,10 +42,7 @@ public class WindowSize : IComparable<WindowSize>
         get { return Rect.Left; }
         set
         {
-            Rect = Rect with
-            {
-                Left = value
-            };
+            Rect = Rect with { Left = value };
         }
     }
 
@@ -61,10 +52,7 @@ public class WindowSize : IComparable<WindowSize>
         get { return Rect.Right; }
         set
         {
-            Rect = Rect with
-            {
-                Right = value
-            };
+            Rect = Rect with { Right = value };
         }
     }
 
@@ -74,10 +62,7 @@ public class WindowSize : IComparable<WindowSize>
         get { return Rect.Bottom; }
         set
         {
-            Rect = Rect with
-            {
-                Bottom = value
-            };
+            Rect = Rect with { Bottom = value };
         }
     }
 
