@@ -216,16 +216,26 @@ namespace WindowResizer.CLI.Commands
         {
             key = default(ConsoleKeyInfo);
 
+            // Prefer the .NET keyboard reader for key events. It handles
+            // extended keys, repeats, and translated characters more reliably
+            // than manually converting KEY_EVENT_RECORD values. Raw console
+            // input is still used below for mouse events and as a keyboard
+            // fallback when Console.KeyAvailable does not see the event.
+            if (TryReadLegacyKeyboardInput(out key))
+            {
+                return true;
+            }
+
             var inputHandle = GetStdHandle(StdInputHandle);
             if (inputHandle == IntPtr.Zero || inputHandle == new IntPtr(-1))
             {
-                return TryReadLegacyKeyboardInput(out key);
+                return false;
             }
 
             uint eventCount;
             if (!GetNumberOfConsoleInputEvents(inputHandle, out eventCount))
             {
-                return TryReadLegacyKeyboardInput(out key);
+                return false;
             }
 
             while (eventCount > 0)
@@ -234,7 +244,7 @@ namespace WindowResizer.CLI.Commands
                 uint recordsRead;
                 if (!ReadConsoleInput(inputHandle, out record, 1, out recordsRead) || recordsRead == 0)
                 {
-                    return TryReadLegacyKeyboardInput(out key);
+                    return false;
                 }
 
                 if (record.EventType == KeyEvent && record.Event.KeyEvent.bKeyDown)
@@ -255,7 +265,7 @@ namespace WindowResizer.CLI.Commands
                 }
             }
 
-            return TryReadLegacyKeyboardInput(out key);
+            return false;
         }
 
         private static bool TryReadLegacyKeyboardInput(out ConsoleKeyInfo key)
@@ -334,8 +344,36 @@ namespace WindowResizer.CLI.Commands
             var shift = (modifiers & ShiftPressed) != 0;
             var alt = (modifiers & (LeftAltPressed | RightAltPressed)) != 0;
             var control = (modifiers & (LeftCtrlPressed | RightCtrlPressed)) != 0;
+            var consoleKey = (ConsoleKey)keyEvent.wVirtualKeyCode;
+            var keyChar = keyEvent.UnicodeChar;
 
-            return new ConsoleKeyInfo(keyEvent.UnicodeChar, (ConsoleKey)keyEvent.wVirtualKeyCode, shift, alt, control);
+            if (keyChar == '\0')
+            {
+                keyChar = GetPrintableCharFromVirtualKey(consoleKey, shift);
+            }
+
+            return new ConsoleKeyInfo(keyChar, consoleKey, shift, alt, control);
+        }
+
+        private static char GetPrintableCharFromVirtualKey(ConsoleKey key, bool shift)
+        {
+            if (key >= ConsoleKey.A && key <= ConsoleKey.Z)
+            {
+                var ch = (char)('A' + ((int)key - (int)ConsoleKey.A));
+                return shift ? ch : char.ToLowerInvariant(ch);
+            }
+
+            if (key >= ConsoleKey.D0 && key <= ConsoleKey.D9)
+            {
+                return (char)('0' + ((int)key - (int)ConsoleKey.D0));
+            }
+
+            if (key >= ConsoleKey.NumPad0 && key <= ConsoleKey.NumPad9)
+            {
+                return (char)('0' + ((int)key - (int)ConsoleKey.NumPad0));
+            }
+
+            return '\0';
         }
 
         private static bool HasConsoleSizeChanged(ref int lastWidth, ref int lastHeight)
