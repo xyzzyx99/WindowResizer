@@ -98,6 +98,21 @@ namespace WindowResizer.CLI.Commands
         }
     }
 
+    public class InteractiveOption : Option<bool>
+    {
+        public InteractiveOption() : base(
+            aliases: new[]
+            {
+                "--interactive",
+                "-i"
+            },
+            description: "Interactively choose a visible top-level window/application before resizing. Use arrow keys and Enter.")
+        {
+            IsRequired = false;
+            AllowMultipleArgumentsPerToken = false;
+        }
+    }
+
     public class VerboseOption : Option<bool>
     {
         public VerboseOption() : base(

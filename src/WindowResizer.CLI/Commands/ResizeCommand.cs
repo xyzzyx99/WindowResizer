@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.CommandLine;
 using System.CommandLine.Invocation;
@@ -23,6 +24,8 @@ namespace WindowResizer.CLI.Commands
             AddOption(titleOption);
             var windowOption = new WindowOption();
             AddOption(windowOption);
+            var interactiveOption = new InteractiveOption();
+            AddOption(interactiveOption);
             var verboseOption = new VerboseOption();
             AddOption(verboseOption);
 
@@ -33,6 +36,7 @@ namespace WindowResizer.CLI.Commands
                 var process = context.ParseResult.GetValueForOption(processOption);
                 var title = context.ParseResult.GetValueForOption(titleOption);
                 var verbose = context.ParseResult.GetValueForOption(verboseOption);
+                var interactive = context.ParseResult.GetValueForOption(interactiveOption);
                 var windowOptionWasUsed = context.ParseResult.FindResultFor(windowOption) != null;
                 var windowArguments = context.ParseResult.GetValueForOption(windowOption) ?? new int[0];
 
@@ -44,13 +48,68 @@ namespace WindowResizer.CLI.Commands
                     }
                 }
 
-                var success = windowOptionWasUsed
-                    ? WindowCmd.ResizeDirect(process, title, windowArguments, Output.Error, VerboseInfo)
-                    : WindowCmd.Resize(config?.FullName, profile, process, title, Output.Error, VerboseInfo);
+                bool success;
+                if (interactive)
+                {
+                    var selectedWindow = ChooseTargetWindow(process, title);
+                    if (selectedWindow == null)
+                    {
+                        context.ExitCode = 1;
+                        return Task.CompletedTask;
+                    }
+
+                    success = windowOptionWasUsed
+                        ? WindowCmd.ResizeDirect(selectedWindow, windowArguments, Output.Error, VerboseInfo)
+                        : WindowCmd.ResizeSelected(config?.FullName, profile, selectedWindow, Output.Error, VerboseInfo);
+                }
+                else
+                {
+                    success = windowOptionWasUsed
+                        ? WindowCmd.ResizeDirect(process, title, windowArguments, Output.Error, VerboseInfo)
+                        : WindowCmd.Resize(config?.FullName, profile, process, title, Output.Error, VerboseInfo);
+                }
 
                 context.ExitCode = success ? 0 : 1;
                 return Task.CompletedTask;
             });
+        }
+
+        private static WindowCmd.TargetWindow ChooseTargetWindow(string process, string title)
+        {
+            if (Console.IsInputRedirected)
+            {
+                Output.Error("Interactive mode requires console input.");
+                return null;
+            }
+
+            var targets = WindowCmd.GetSelectableTargets(process, title, Output.Error);
+            if (!targets.Any())
+            {
+                Output.Error(string.IsNullOrWhiteSpace(process)
+                    ? "No visible windowed applications found."
+                    : $"No visible windows found for process <{process}>.");
+                return null;
+            }
+
+            var prompt = new SelectionPrompt<WindowCmd.TargetWindow>()
+                         .Title("Select a window/application:")
+                         .PageSize(15)
+                         .MoreChoicesText("[grey](Move up and down to reveal more windows)[/]")
+                         .UseConverter(FormatTargetWindow);
+            prompt.AddChoices(targets);
+
+            return AnsiConsole.Prompt(prompt);
+        }
+
+        private static string FormatTargetWindow(WindowCmd.TargetWindow target)
+        {
+            var title = string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title;
+            return $"[green]{EscapeMarkup(target.ProcessName)}[/] [grey]|[/] {EscapeMarkup(title)} [grey](0x{target.Handle.ToInt64():X})[/]";
+        }
+
+        private static string EscapeMarkup(string value)
+        {
+            return value.Replace("[", "[[").Replace("]", "]]");
         }
 
         private static void Verbose(List<WindowCmd.TargetWindow> lists)

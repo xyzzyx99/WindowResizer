@@ -77,6 +77,47 @@ public static class WindowCmd
         return true;
     }
 
+    public static bool ResizeSelected(string? configPath, string? profileName, TargetWindow target,
+        Action<string>? onError = null,
+        Action<List<TargetWindow>>? onDebug = null)
+    {
+        var profile = LoadConfig(configPath, profileName, onError);
+        if (profile is null)
+        {
+            return false;
+        }
+
+        ResizeWindow(target.Handle, profile, (p, e) =>
+        {
+            target.Result = "Elevated privileges may be required.";
+            onError?.Invoke($"Unable to resize process <{p}>, elevated privileges may be required.");
+        }, (p, t) =>
+        {
+            target.Result = "No saved settings.";
+            onError?.Invoke($"No saved settings for <{p} :: {t}>.");
+        });
+
+        var targets = new List<TargetWindow> { target };
+        onDebug?.Invoke(targets);
+        return string.IsNullOrEmpty(target.Result);
+    }
+
+    public static bool ResizeDirect(TargetWindow target, IReadOnlyList<int> windowArguments,
+        Action<string>? onError = null,
+        Action<List<TargetWindow>>? onDebug = null)
+    {
+        if (windowArguments.Count > 4)
+        {
+            onError?.Invoke("The -w/--window option accepts at most four numbers: left top right bottom.");
+            return false;
+        }
+
+        var targets = new List<TargetWindow> { target };
+        var success = ApplyDirectResize(targets, windowArguments, onError);
+        onDebug?.Invoke(targets);
+        return success;
+    }
+
     public static bool ResizeDirect(string? process, string? title, IReadOnlyList<int> windowArguments,
         Action<string>? onError = null,
         Action<List<TargetWindow>>? onDebug = null)
@@ -97,28 +138,9 @@ public static class WindowCmd
             return false;
         }
 
-        foreach (var tp in targets)
-        {
-            try
-            {
-                var currentRect = Resizer.GetRect(tp.Handle);
-                var targetRect = BuildDirectRect(tp.Handle, currentRect, windowArguments);
-                var placement = Resizer.GetPlacement(tp.Handle);
-                if (!Resizer.SetPlacement(tp.Handle, targetRect, placement.MaximizedPosition, WindowState.Normal))
-                {
-                    tp.Result = "Unable to move or resize the window.";
-                    onError?.Invoke($"Unable to move or resize process <{tp.ProcessName}>.");
-                }
-            }
-            catch (Exception e)
-            {
-                tp.Result = e.Message;
-                onError?.Invoke($"Unable to move or resize process <{tp.ProcessName}>: {e.Message}");
-            }
-        }
-
+        var success = ApplyDirectResize(targets, windowArguments, onError);
         onDebug?.Invoke(targets);
-        return targets.Any(t => string.IsNullOrEmpty(t.Result));
+        return success;
     }
 
     public class TargetWindow
@@ -139,6 +161,55 @@ public static class WindowCmd
         public string Result { get; set; } = string.Empty;
     }
 
+    public static List<TargetWindow> GetSelectableTargets(string? process, string? title, Action<string>? onError)
+    {
+        var targets = GetOpenWindowTargets();
+
+        if (!string.IsNullOrWhiteSpace(process))
+        {
+            targets = targets.Where(i => i.ProcessName.Equals(process, StringComparison.OrdinalIgnoreCase)).ToList();
+        }
+
+        Regex? titleRegex = null;
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            try
+            {
+                titleRegex = new Regex(title);
+            }
+            catch (Exception e)
+            {
+                onError?.Invoke($"Invalid title regex <{title}>: {e.Message}");
+                return new List<TargetWindow>();
+            }
+        }
+
+        if (titleRegex != null)
+        {
+            targets = targets.Where(i => !string.IsNullOrEmpty(i.Title) && titleRegex.IsMatch(i.Title!)).ToList();
+        }
+
+        return targets;
+    }
+
+    public static List<TargetWindow> GetOpenWindowTargets()
+    {
+        var windows = Resizer.GetOpenWindows();
+        var targets = new List<TargetWindow>();
+
+        foreach (var handler in windows)
+        {
+            if (!IsProcessAvailable(handler, out string processName, null))
+            {
+                continue;
+            }
+
+            targets.Add(new TargetWindow(handler, processName, Resizer.GetWindowTitle(handler)));
+        }
+
+        return targets;
+    }
+
     private static List<TargetWindow> GetTargets(string? process, string? title, Action<string>? onError)
     {
         var targets = new List<TargetWindow>();
@@ -153,45 +224,34 @@ public static class WindowCmd
             return targets;
         }
 
-        var windows = Resizer.GetOpenWindows();
-        windows.Reverse();
+        targets = GetSelectableTargets(process, title, onError);
+        targets.Reverse();
+        return targets;
+    }
 
-        Regex? titleRegex = null;
-        if (!string.IsNullOrWhiteSpace(title))
+    private static bool ApplyDirectResize(List<TargetWindow> targets, IReadOnlyList<int> windowArguments, Action<string>? onError)
+    {
+        foreach (var tp in targets)
         {
             try
             {
-                titleRegex = new Regex(title);
+                var currentRect = Resizer.GetRect(tp.Handle);
+                var targetRect = BuildDirectRect(tp.Handle, currentRect, windowArguments);
+                var placement = Resizer.GetPlacement(tp.Handle);
+                if (!Resizer.SetPlacement(tp.Handle, targetRect, placement.MaximizedPosition, WindowState.Normal))
+                {
+                    tp.Result = "Unable to move or resize the window.";
+                    onError?.Invoke($"Unable to move or resize process <{tp.ProcessName}>.");
+                }
             }
             catch (Exception e)
             {
-                onError?.Invoke($"Invalid title regex <{title}>: {e.Message}");
-                return targets;
+                tp.Result = e.Message;
+                onError?.Invoke($"Unable to move or resize process <{tp.ProcessName}>: {e.Message}");
             }
         }
 
-        foreach (var handler in windows)
-        {
-            if (!IsProcessAvailable(handler, out string processName, null))
-            {
-                continue;
-            }
-
-            if (!processName.Equals(process, StringComparison.OrdinalIgnoreCase))
-            {
-                continue;
-            }
-
-            var windowTitle = Resizer.GetWindowTitle(handler);
-            if (titleRegex != null && (string.IsNullOrEmpty(windowTitle) || !titleRegex.IsMatch(windowTitle)))
-            {
-                continue;
-            }
-
-            targets.Add(new TargetWindow(handler, processName, windowTitle));
-        }
-
-        return targets;
+        return targets.Any(t => string.IsNullOrEmpty(t.Result));
     }
 
     private static Rect BuildDirectRect(IntPtr handle, Rect currentRect, IReadOnlyList<int> windowArguments)
