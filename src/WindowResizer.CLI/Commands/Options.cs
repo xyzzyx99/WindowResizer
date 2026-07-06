@@ -82,7 +82,7 @@ namespace WindowResizer.CLI.Commands
                 "--window",
                 "-w"
             },
-            description: "Direct window coordinates: -w [left] [top] [right] [bottom]. Skips config and uses the foreground window when --process is omitted.")
+            description: "Direct window placement, skipping config: -w centers/resizes the window; -w left top moves it and keeps current size; -w left top right keeps current height; -w left top right bottom sets the full rectangle. Uses the foreground window when --process is omitted.")
         {
             IsRequired = false;
             AllowMultipleArgumentsPerToken = true;
