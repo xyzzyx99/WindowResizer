@@ -106,7 +106,7 @@ namespace WindowResizer.CLI.Commands
                 "--interactive",
                 "-i"
             },
-            description: "Interactively choose a visible top-level window/application before resizing. Use arrow keys and Enter.")
+            description: "Interactively choose a visible top-level window/application before resizing. Use arrow keys and Enter. The selected row uses the inverse of the terminal background color.")
         {
             IsRequired = false;
             AllowMultipleArgumentsPerToken = false;
