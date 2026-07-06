@@ -171,6 +171,7 @@ namespace WindowResizer.CLI.Commands
                 FinishSelectorScreen(usingAlternateScreen, originalCursorVisible);
                 Console.ForegroundColor = originalForeground;
                 Console.BackgroundColor = originalBackground;
+                TrySetConsoleCursorVisible(originalCursorVisible);
                 Console.CursorVisible = originalCursorVisible;
             }
         }
@@ -182,6 +183,11 @@ namespace WindowResizer.CLI.Commands
         {
             while (true)
             {
+                // Windows Terminal may briefly re-enable or show the text cursor
+                // while the window is being resized. Keep hiding it even when
+                // there is no key press and no redraw yet.
+                HideSelectorCursor(usingAlternateScreen);
+
                 if (Console.KeyAvailable)
                 {
                     return Console.ReadKey(true);
@@ -241,6 +247,8 @@ namespace WindowResizer.CLI.Commands
 
         private static void HideSelectorCursor(bool usingAlternateScreen)
         {
+            TrySetConsoleCursorVisible(false);
+
             try
             {
                 Console.CursorVisible = false;
@@ -324,6 +332,31 @@ namespace WindowResizer.CLI.Commands
             catch
             {
                 // Ignore console cleanup failures.
+            }
+        }
+
+        private static bool TrySetConsoleCursorVisible(bool visible)
+        {
+            try
+            {
+                var handle = GetStdHandle(StdOutputHandle);
+                if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+                {
+                    return false;
+                }
+
+                ConsoleCursorInfo cursorInfo;
+                if (!GetConsoleCursorInfo(handle, out cursorInfo))
+                {
+                    return false;
+                }
+
+                cursorInfo.Visible = visible;
+                return SetConsoleCursorInfo(handle, ref cursorInfo);
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -492,6 +525,12 @@ namespace WindowResizer.CLI.Commands
                 ? $"Showing {offset + 1}-{offset + visibleCount} of {targets.Count}."
                 : $"Showing {targets.Count} window(s).";
             WriteSelectorLine(row, footer, width);
+
+            // Leave the cursor in a harmless position and hide it again after
+            // every paint. Resizing the terminal can temporarily reveal the
+            // cursor at the last write position otherwise.
+            TrySetSelectorCursorPosition(0, 0);
+            HideSelectorCursor(useAnsiColors);
         }
 
         private static void FinishTargetWindowSelector(int startTop, int pageSize,
@@ -686,6 +725,21 @@ namespace WindowResizer.CLI.Commands
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool SetConsoleMode(IntPtr hConsoleHandle, int dwMode);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ConsoleCursorInfo
+        {
+            public int Size;
+
+            [MarshalAs(UnmanagedType.Bool)]
+            public bool Visible;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetConsoleCursorInfo(IntPtr hConsoleOutput, out ConsoleCursorInfo lpConsoleCursorInfo);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetConsoleCursorInfo(IntPtr hConsoleOutput, ref ConsoleCursorInfo lpConsoleCursorInfo);
 
         private static ConsoleColor GetDarkInvertedConsoleColor(ConsoleColor color)
         {
