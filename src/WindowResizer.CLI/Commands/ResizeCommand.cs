@@ -103,8 +103,8 @@ namespace WindowResizer.CLI.Commands
 
             var selectedIndex = 0;
             var offset = 0;
-            const int pageSize = 15;
-            var startTop = Console.CursorTop;
+            var startTop = EnsureSelectorStartTop();
+            var pageSize = GetSelectorPageSize(startTop);
             var originalForeground = Console.ForegroundColor;
             var originalBackground = Console.BackgroundColor;
             var originalCursorVisible = Console.CursorVisible;
@@ -115,6 +115,7 @@ namespace WindowResizer.CLI.Commands
                 Console.CursorVisible = false;
                 while (true)
                 {
+                    pageSize = GetSelectorPageSize(startTop);
                     RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
                         highlightBackground, originalForeground, originalBackground);
 
@@ -164,6 +165,51 @@ namespace WindowResizer.CLI.Commands
                 Console.BackgroundColor = originalBackground;
                 Console.CursorVisible = originalCursorVisible;
             }
+        }
+
+        private static int EnsureSelectorStartTop()
+        {
+            var startTop = Console.CursorTop;
+
+            try
+            {
+                while (GetAvailableSelectorRows(startTop) < 6)
+                {
+                    Console.WriteLine();
+                    startTop = Console.CursorTop;
+                }
+            }
+            catch
+            {
+                // Some redirected or unusual consoles can throw for WindowTop/WindowHeight.
+                // Fall back to the current cursor position and the minimum selector height.
+            }
+
+            return startTop;
+        }
+
+        private static int GetSelectorPageSize(int startTop)
+        {
+            const int headerLines = 2;
+            const int footerLines = 1;
+            const int minimumPageSize = 1;
+            const int fallbackPageSize = 15;
+
+            try
+            {
+                var pageSize = GetAvailableSelectorRows(startTop) - headerLines - footerLines;
+                return Math.Max(minimumPageSize, pageSize);
+            }
+            catch
+            {
+                return fallbackPageSize;
+            }
+        }
+
+        private static int GetAvailableSelectorRows(int startTop)
+        {
+            var visibleBottom = Console.WindowTop + Console.WindowHeight;
+            return Math.Max(0, visibleBottom - startTop);
         }
 
         private static void JumpToProcessGroupByKey(List<WindowCmd.TargetWindow> targets, ConsoleKeyInfo key, ref int selectedIndex)
