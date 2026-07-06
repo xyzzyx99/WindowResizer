@@ -119,7 +119,7 @@ namespace WindowResizer.CLI.Commands
                 {
                     pageSize = GetSelectorPageSize();
                     RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
-                        highlightBackground, originalForeground, originalBackground);
+                        highlightBackground, originalForeground, originalBackground, usingAlternateScreen);
 
                     var key = Console.ReadKey(true);
                     switch (key.Key)
@@ -163,10 +163,10 @@ namespace WindowResizer.CLI.Commands
             }
             finally
             {
+                FinishSelectorScreen(usingAlternateScreen, originalCursorVisible);
                 Console.ForegroundColor = originalForeground;
                 Console.BackgroundColor = originalBackground;
                 Console.CursorVisible = originalCursorVisible;
-                FinishSelectorScreen(usingAlternateScreen);
             }
         }
 
@@ -190,11 +190,11 @@ namespace WindowResizer.CLI.Commands
             return usingAlternateScreen;
         }
 
-        private static void FinishSelectorScreen(bool usingAlternateScreen)
+        private static void FinishSelectorScreen(bool usingAlternateScreen, bool originalCursorVisible)
         {
             if (usingAlternateScreen)
             {
-                TryLeaveAlternateScreen();
+                TryLeaveAlternateScreen(originalCursorVisible);
             }
         }
 
@@ -207,7 +207,7 @@ namespace WindowResizer.CLI.Commands
                     return false;
                 }
 
-                Console.Write("\x1b[?1049h");
+                Console.Write("\x1b[?1049h\x1b[?25l");
                 return true;
             }
             catch
@@ -216,11 +216,12 @@ namespace WindowResizer.CLI.Commands
             }
         }
 
-        private static void TryLeaveAlternateScreen()
+        private static void TryLeaveAlternateScreen(bool originalCursorVisible)
         {
             try
             {
-                Console.Write("\x1b[?1049l");
+                Console.Write("\x1b[0m\x1b[?1049l");
+                Console.Write(originalCursorVisible ? "\x1b[?25h" : "\x1b[?25l");
             }
             catch
             {
@@ -333,7 +334,7 @@ namespace WindowResizer.CLI.Commands
 
         private static void RenderTargetWindowSelector(List<WindowCmd.TargetWindow> targets, int selectedIndex, ref int offset,
             int pageSize, int startTop, ConsoleColor highlightBackground,
-            ConsoleColor originalForeground, ConsoleColor originalBackground)
+            ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors)
         {
             if (selectedIndex < offset)
             {
@@ -346,9 +347,9 @@ namespace WindowResizer.CLI.Commands
 
             var width = Math.Max(20, Console.BufferWidth - 1);
             var row = startTop;
-            Console.ForegroundColor = originalForeground;
-            Console.BackgroundColor = originalBackground;
+            SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
             WriteSelectorLine(row++, "Select a window/application:", width);
+            SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
             WriteSelectorLine(row++, "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, Enter to choose, Esc to quit.", width);
 
             var visibleCount = Math.Min(pageSize, targets.Count - offset);
@@ -359,11 +360,11 @@ namespace WindowResizer.CLI.Commands
                 var rowBackground = selected ? highlightBackground : originalBackground;
 
                 Console.SetCursorPosition(0, row++);
-                Console.BackgroundColor = rowBackground;
+                SetSelectorColors(originalForeground, rowBackground, useAnsiColors);
 
                 if (targetIndex < targets.Count)
                 {
-                    WriteTargetWindowSelectorLine(targets[targetIndex], width, selected, originalForeground, rowBackground);
+                    WriteTargetWindowSelectorLine(targets[targetIndex], width, selected, originalForeground, rowBackground, useAnsiColors);
                 }
                 else
                 {
@@ -371,8 +372,7 @@ namespace WindowResizer.CLI.Commands
                 }
             }
 
-            Console.ForegroundColor = originalForeground;
-            Console.BackgroundColor = originalBackground;
+            SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
             var footer = targets.Count > visibleCount
                 ? $"Showing {offset + 1}-{offset + visibleCount} of {targets.Count}."
                 : $"Showing {targets.Count} window(s).";
@@ -403,33 +403,32 @@ namespace WindowResizer.CLI.Commands
         }
 
         private static void WriteTargetWindowSelectorLine(WindowCmd.TargetWindow target, int width, bool selected,
-            ConsoleColor originalForeground, ConsoleColor background)
+            ConsoleColor originalForeground, ConsoleColor background, bool useAnsiColors)
         {
             var title = string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title;
             var used = 0;
             var processForeground = selected ? originalForeground : ConsoleColor.Green;
             var mutedForeground = selected ? originalForeground : ConsoleColor.DarkGray;
             var titleForeground = originalForeground;
-            Console.BackgroundColor = background;
-            used += WriteSelectorSegment(selected ? "> " : "  ", width - used, titleForeground, background);
-            used += WriteSelectorSegment(target.ProcessName, width - used, processForeground, background);
-            used += WriteProcessInfo(target, width - used, selected, processForeground, mutedForeground, background);
+            SetSelectorColors(titleForeground, background, useAnsiColors);
+            used += WriteSelectorSegment(selected ? "> " : "  ", width - used, titleForeground, background, useAnsiColors);
+            used += WriteSelectorSegment(target.ProcessName, width - used, processForeground, background, useAnsiColors);
+            used += WriteProcessInfo(target, width - used, selected, processForeground, mutedForeground, background, useAnsiColors);
 
-            used += WriteSelectorSegment(" | ", width - used, mutedForeground, background);
-            used += WriteSelectorSegment(title, width - used, titleForeground, background);
-            used += WriteSelectorSegment($" (0x{target.Handle.ToInt64():X})", width - used, mutedForeground, background);
+            used += WriteSelectorSegment(" | ", width - used, mutedForeground, background, useAnsiColors);
+            used += WriteSelectorSegment(title, width - used, titleForeground, background, useAnsiColors);
+            used += WriteSelectorSegment($" (0x{target.Handle.ToInt64():X})", width - used, mutedForeground, background, useAnsiColors);
 
             if (used < width)
             {
-                Console.ForegroundColor = titleForeground;
-                Console.BackgroundColor = background;
+                SetSelectorColors(titleForeground, background, useAnsiColors);
                 Console.Write(new string(' ', width - used));
             }
 
         }
 
         private static int WriteProcessInfo(WindowCmd.TargetWindow target, int availableWidth, bool selected,
-            ConsoleColor topForeground, ConsoleColor mutedForeground, ConsoleColor background)
+            ConsoleColor topForeground, ConsoleColor mutedForeground, ConsoleColor background, bool useAnsiColors)
         {
             if (availableWidth <= 0 || (target.ProcessId <= 0 && !target.IsTopForProcess))
             {
@@ -439,29 +438,29 @@ namespace WindowResizer.CLI.Commands
             var used = 0;
             var pidForeground = selected ? topForeground : mutedForeground;
 
-            used += WriteSelectorSegment(" [", availableWidth - used, mutedForeground, background);
+            used += WriteSelectorSegment(" [", availableWidth - used, mutedForeground, background, useAnsiColors);
 
             if (target.ProcessId > 0)
             {
-                used += WriteSelectorSegment(target.ProcessId.ToString(), availableWidth - used, pidForeground, background);
+                used += WriteSelectorSegment(target.ProcessId.ToString(), availableWidth - used, pidForeground, background, useAnsiColors);
 
                 if (target.IsTopForProcess)
                 {
-                    used += WriteSelectorSegment(" ", availableWidth - used, mutedForeground, background);
+                    used += WriteSelectorSegment(" ", availableWidth - used, mutedForeground, background, useAnsiColors);
                 }
             }
 
             if (target.IsTopForProcess)
             {
-                used += WriteSelectorSegment("Top", availableWidth - used, topForeground, background);
+                used += WriteSelectorSegment("Top", availableWidth - used, topForeground, background, useAnsiColors);
             }
 
-            used += WriteSelectorSegment("]", availableWidth - used, mutedForeground, background);
+            used += WriteSelectorSegment("]", availableWidth - used, mutedForeground, background, useAnsiColors);
             return used;
         }
 
         private static int WriteSelectorSegment(string text, int availableWidth,
-            ConsoleColor foreground, ConsoleColor background)
+            ConsoleColor foreground, ConsoleColor background, bool useAnsiColors)
         {
             if (availableWidth <= 0)
             {
@@ -475,10 +474,74 @@ namespace WindowResizer.CLI.Commands
                     : text.Substring(0, availableWidth - 1) + "…";
             }
 
-            Console.ForegroundColor = foreground;
-            Console.BackgroundColor = background;
+            SetSelectorColors(foreground, background, useAnsiColors);
             Console.Write(text);
             return text.Length;
+        }
+
+
+        private static void SetSelectorColors(ConsoleColor foreground, ConsoleColor background, bool useAnsiColors)
+        {
+            Console.ForegroundColor = foreground;
+            Console.BackgroundColor = background;
+
+            if (useAnsiColors)
+            {
+                Console.Write(GetAnsiColorSequence(foreground, background));
+            }
+        }
+
+        private static string GetAnsiColorSequence(ConsoleColor foreground, ConsoleColor background)
+        {
+            return $"\x1b[{GetAnsiForegroundCode(foreground)};{GetAnsiBackgroundCode(background)}m";
+        }
+
+        private static int GetAnsiForegroundCode(ConsoleColor color)
+        {
+            switch (color)
+            {
+                case ConsoleColor.Black: return 30;
+                case ConsoleColor.DarkBlue: return 34;
+                case ConsoleColor.DarkGreen: return 32;
+                case ConsoleColor.DarkCyan: return 36;
+                case ConsoleColor.DarkRed: return 31;
+                case ConsoleColor.DarkMagenta: return 35;
+                case ConsoleColor.DarkYellow: return 33;
+                case ConsoleColor.Gray: return 37;
+                case ConsoleColor.DarkGray: return 90;
+                case ConsoleColor.Blue: return 94;
+                case ConsoleColor.Green: return 92;
+                case ConsoleColor.Cyan: return 96;
+                case ConsoleColor.Red: return 91;
+                case ConsoleColor.Magenta: return 95;
+                case ConsoleColor.Yellow: return 93;
+                case ConsoleColor.White: return 97;
+                default: return 39;
+            }
+        }
+
+        private static int GetAnsiBackgroundCode(ConsoleColor color)
+        {
+            switch (color)
+            {
+                case ConsoleColor.Black: return 40;
+                case ConsoleColor.DarkBlue: return 44;
+                case ConsoleColor.DarkGreen: return 42;
+                case ConsoleColor.DarkCyan: return 46;
+                case ConsoleColor.DarkRed: return 41;
+                case ConsoleColor.DarkMagenta: return 45;
+                case ConsoleColor.DarkYellow: return 43;
+                case ConsoleColor.Gray: return 47;
+                case ConsoleColor.DarkGray: return 100;
+                case ConsoleColor.Blue: return 104;
+                case ConsoleColor.Green: return 102;
+                case ConsoleColor.Cyan: return 106;
+                case ConsoleColor.Red: return 101;
+                case ConsoleColor.Magenta: return 105;
+                case ConsoleColor.Yellow: return 103;
+                case ConsoleColor.White: return 107;
+                default: return 49;
+            }
         }
 
 
