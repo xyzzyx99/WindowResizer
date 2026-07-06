@@ -4,6 +4,7 @@ using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using Spectre.Console;
 using WindowResizer.Base;
@@ -111,17 +112,21 @@ namespace WindowResizer.CLI.Commands
             var startTop = 0;
             var pageSize = GetSelectorPageSize();
             var highlightBackground = GetDarkInvertedConsoleColor(originalBackground);
+            var lastConsoleWidth = GetSafeConsoleWidth();
+            var lastConsoleHeight = GetSafeConsoleHeight();
 
             try
             {
-                Console.CursorVisible = false;
+                HideSelectorCursor(usingAlternateScreen);
                 while (true)
                 {
                     pageSize = GetSelectorPageSize();
                     RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
                         highlightBackground, originalForeground, originalBackground, usingAlternateScreen);
 
-                    var key = Console.ReadKey(true);
+                    var key = ReadSelectorKey(targets, selectedIndex, ref offset, ref pageSize, startTop,
+                        highlightBackground, originalForeground, originalBackground, usingAlternateScreen,
+                        ref lastConsoleWidth, ref lastConsoleHeight);
                     switch (key.Key)
                     {
                         case ConsoleKey.UpArrow:
@@ -170,15 +175,98 @@ namespace WindowResizer.CLI.Commands
             }
         }
 
-        private static bool PrepareSelectorScreen()
+        private static ConsoleKeyInfo ReadSelectorKey(List<WindowCmd.TargetWindow> targets, int selectedIndex, ref int offset,
+            ref int pageSize, int startTop, ConsoleColor highlightBackground,
+            ConsoleColor originalForeground, ConsoleColor originalBackground, bool usingAlternateScreen,
+            ref int lastConsoleWidth, ref int lastConsoleHeight)
         {
-            var usingAlternateScreen = TryEnterAlternateScreen();
+            while (true)
+            {
+                if (Console.KeyAvailable)
+                {
+                    return Console.ReadKey(true);
+                }
 
+                if (HasConsoleSizeChanged(ref lastConsoleWidth, ref lastConsoleHeight))
+                {
+                    HideSelectorCursor(usingAlternateScreen);
+                    TryClearSelectorScreen();
+                    pageSize = GetSelectorPageSize();
+                    RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
+                        highlightBackground, originalForeground, originalBackground, usingAlternateScreen);
+                }
+
+                Thread.Sleep(50);
+            }
+        }
+
+        private static bool HasConsoleSizeChanged(ref int lastWidth, ref int lastHeight)
+        {
+            var currentWidth = GetSafeConsoleWidth();
+            var currentHeight = GetSafeConsoleHeight();
+
+            if (currentWidth == lastWidth && currentHeight == lastHeight)
+            {
+                return false;
+            }
+
+            lastWidth = currentWidth;
+            lastHeight = currentHeight;
+            return true;
+        }
+
+        private static int GetSafeConsoleWidth()
+        {
             try
             {
-                // Use a full-screen selector area. When alternate screen support
-                // is available, the original terminal contents are restored after
-                // choosing a window or pressing Esc.
+                return Console.WindowWidth;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static int GetSafeConsoleHeight()
+        {
+            try
+            {
+                return Console.WindowHeight;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        private static void HideSelectorCursor(bool usingAlternateScreen)
+        {
+            try
+            {
+                Console.CursorVisible = false;
+            }
+            catch
+            {
+                // Ignore consoles that do not allow cursor visibility changes.
+            }
+
+            if (usingAlternateScreen)
+            {
+                try
+                {
+                    Console.Write("\x1b[?25l");
+                }
+                catch
+                {
+                    // Ignore VT cleanup failures.
+                }
+            }
+        }
+
+        private static void TryClearSelectorScreen()
+        {
+            try
+            {
                 Console.Clear();
                 Console.SetCursorPosition(0, 0);
             }
@@ -186,6 +274,16 @@ namespace WindowResizer.CLI.Commands
             {
                 // Some redirected or unusual consoles may not allow cursor positioning.
             }
+        }
+
+        private static bool PrepareSelectorScreen()
+        {
+            var usingAlternateScreen = TryEnterAlternateScreen();
+
+            // Use a full-screen selector area. When alternate screen support
+            // is available, the original terminal contents are restored after
+            // choosing a window or pressing Esc.
+            TryClearSelectorScreen();
 
             return usingAlternateScreen;
         }
@@ -332,10 +430,24 @@ namespace WindowResizer.CLI.Commands
                    && char.ToUpperInvariant(processName[0]) == keyChar;
         }
 
+        private static int GetSafeSelectorWidth()
+        {
+            try
+            {
+                return Math.Max(1, Math.Min(Console.BufferWidth, Console.WindowWidth) - 1);
+            }
+            catch
+            {
+                return 79;
+            }
+        }
+
         private static void RenderTargetWindowSelector(List<WindowCmd.TargetWindow> targets, int selectedIndex, ref int offset,
             int pageSize, int startTop, ConsoleColor highlightBackground,
             ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors)
         {
+            HideSelectorCursor(useAnsiColors);
+
             if (selectedIndex < offset)
             {
                 offset = selectedIndex;
@@ -345,7 +457,7 @@ namespace WindowResizer.CLI.Commands
                 offset = selectedIndex - pageSize + 1;
             }
 
-            var width = Math.Max(20, Console.BufferWidth - 1);
+            var width = Math.Max(20, GetSafeSelectorWidth());
             var row = startTop;
             SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
             WriteSelectorLine(row++, "Select a window/application:", width);
@@ -359,7 +471,10 @@ namespace WindowResizer.CLI.Commands
                 var selected = targetIndex == selectedIndex;
                 var rowBackground = selected ? highlightBackground : originalBackground;
 
-                Console.SetCursorPosition(0, row++);
+                if (!TrySetSelectorCursorPosition(0, row++))
+                {
+                    return;
+                }
                 SetSelectorColors(originalForeground, rowBackground, useAnsiColors);
 
                 if (targetIndex < targets.Count)
@@ -386,10 +501,25 @@ namespace WindowResizer.CLI.Commands
             Console.BackgroundColor = originalBackground;
         }
 
+        private static bool TrySetSelectorCursorPosition(int left, int top)
+        {
+            try
+            {
+                Console.SetCursorPosition(left, top);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static void WriteSelectorLine(int row, string text, int width)
         {
-            Console.SetCursorPosition(0, row);
-            WriteSelectorLine(text, width);
+            if (TrySetSelectorCursorPosition(0, row))
+            {
+                WriteSelectorLine(text, width);
+            }
         }
 
         private static void WriteSelectorLine(string text, int width)
