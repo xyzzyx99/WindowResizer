@@ -153,10 +153,10 @@ public static class Resizer
 
         RestoreWindowIfMinimized(hWnd);
         ShowWindow(hWnd, (int)ShowWindowCommands.Normal);
+        BringWindowToTop(hWnd);
         var result = SetWindowPos(hWnd, 0, rect.Left, rect.Top,
             rect.Right - rect.Left, rect.Bottom - rect.Top,
             (int)SetWindowPosFlags.SWP_NOOWNERZORDER);
-        BringWindowToTop(hWnd);
         return result == IntPtr.Zero;
     }
 
@@ -265,6 +265,7 @@ public static class Resizer
 
         RestoreWindowIfMinimized(hWnd);
         ShowWindow(hWnd, (int)ShowWindowCommands.Normal);
+        BringWindowToTop(hWnd);
 
         var placement = NativeMethods.WindowPlacement.Default;
         placement.MaxPosition = maximizedPosition;
@@ -285,7 +286,6 @@ public static class Resizer
         }
 
         var result = SetWindowPlacement(hWnd, ref placement);
-        BringWindowToTop(hWnd);
         return result;
     }
 

@@ -152,6 +152,9 @@ namespace WindowResizer.CLI.Commands
                             canceled = true;
                             FinishTargetWindowSelector(startTop, pageSize, originalForeground, originalBackground);
                             return null;
+                        default:
+                            JumpToProcessGroupByKey(targets, key, ref selectedIndex);
+                            break;
                     }
                 }
             }
@@ -161,6 +164,67 @@ namespace WindowResizer.CLI.Commands
                 Console.BackgroundColor = originalBackground;
                 Console.CursorVisible = originalCursorVisible;
             }
+        }
+
+        private static void JumpToProcessGroupByKey(List<WindowCmd.TargetWindow> targets, ConsoleKeyInfo key, ref int selectedIndex)
+        {
+            var keyChar = char.ToUpperInvariant(key.KeyChar);
+            if (!char.IsLetterOrDigit(keyChar) || targets.Count == 0)
+            {
+                return;
+            }
+
+            var currentGroupStart = GetProcessGroupStartIndex(targets, selectedIndex);
+            var nextIndex = FindNextProcessGroupStartingWith(targets, keyChar, currentGroupStart + 1);
+            if (nextIndex < 0)
+            {
+                nextIndex = FindNextProcessGroupStartingWith(targets, keyChar, 0);
+            }
+
+            if (nextIndex >= 0)
+            {
+                selectedIndex = nextIndex;
+            }
+        }
+
+        private static int GetProcessGroupStartIndex(List<WindowCmd.TargetWindow> targets, int selectedIndex)
+        {
+            var current = Math.Max(0, Math.Min(selectedIndex, targets.Count - 1));
+            while (current > 0 && string.Equals(targets[current - 1].ProcessName, targets[current].ProcessName, StringComparison.OrdinalIgnoreCase))
+            {
+                current--;
+            }
+
+            return current;
+        }
+
+        private static int FindNextProcessGroupStartingWith(List<WindowCmd.TargetWindow> targets, char keyChar, int startIndex)
+        {
+            for (var i = Math.Max(0, startIndex); i < targets.Count; i++)
+            {
+                if (!IsProcessGroupStart(targets, i))
+                {
+                    continue;
+                }
+
+                if (ProcessNameStartsWith(targets[i].ProcessName, keyChar))
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private static bool IsProcessGroupStart(List<WindowCmd.TargetWindow> targets, int index)
+        {
+            return index <= 0 || !string.Equals(targets[index - 1].ProcessName, targets[index].ProcessName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ProcessNameStartsWith(string processName, char keyChar)
+        {
+            return !string.IsNullOrWhiteSpace(processName)
+                   && char.ToUpperInvariant(processName[0]) == keyChar;
         }
 
         private static void RenderTargetWindowSelector(List<WindowCmd.TargetWindow> targets, int selectedIndex, ref int offset,
@@ -181,7 +245,7 @@ namespace WindowResizer.CLI.Commands
             Console.ForegroundColor = originalForeground;
             Console.BackgroundColor = originalBackground;
             WriteSelectorLine("Select a window/application:", width);
-            WriteSelectorLine("Use ↑/↓, PgUp/PgDn, Home/End, Enter to choose, Esc to quit.", width);
+            WriteSelectorLine("Use ↑/↓, PgUp/PgDn, Home/End, letter keys, Enter to choose, Esc to quit.", width);
 
             var visibleCount = Math.Min(pageSize, targets.Count - offset);
             for (var i = 0; i < pageSize; i++)
