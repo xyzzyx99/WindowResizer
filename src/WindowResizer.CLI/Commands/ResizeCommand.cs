@@ -372,7 +372,16 @@ namespace WindowResizer.CLI.Commands
             }
 
             selectedIndex = targetIndex;
-            key = new ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false);
+
+            if (mouseEvent.dwEventFlags == DoubleClick)
+            {
+                key = new ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false);
+            }
+            else
+            {
+                key = CreateNoOpKey();
+            }
+
             return true;
         }
 
@@ -758,7 +767,7 @@ namespace WindowResizer.CLI.Commands
             SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
             WriteSelectorLine(row++, "Select a window/application:", width);
             SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
-            WriteSelectorLine(row++, "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel/click, Enter, Esc.", width);
+            WriteSelectorLine(row++, "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc.", width);
 
             var visibleCount = Math.Min(pageSize, targets.Count - offset);
             for (var i = 0; i < pageSize; i++)

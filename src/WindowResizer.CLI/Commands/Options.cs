@@ -106,7 +106,7 @@ namespace WindowResizer.CLI.Commands
                 "--interactive",
                 "-i"
             },
-            description: "Interactively choose a visible top-level window/application before resizing. Use arrow keys, mouse click/wheel, letter keys, and Enter, or Esc to quit. Shows PID and marks the frontmost listed window for each process name as Top. The selected row uses a dark inverted highlight background.")
+            description: "Interactively choose a visible top-level window/application before resizing. Use arrow keys, mouse wheel, single-click to highlight, double-click to choose, letter keys, and Enter, or Esc to quit. Shows PID and marks the frontmost listed window for each process name as Top. The selected row uses a dark inverted highlight background.")
         {
             IsRequired = false;
             AllowMultipleArgumentsPerToken = false;
