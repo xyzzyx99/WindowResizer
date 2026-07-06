@@ -99,6 +99,8 @@ Options:
   -p, --process <process>  Process name, use foreground process if omitted.
   -t, --title <title>      Process title, all windows of the process will be resized if not specified.
   -v, --verbose            Show more details.
+  -w, --window             Direct placement
+  -i, --interactiv         Interactive to choose a window
   -?, -h, --help           Show help and usage information
 ```
 
@@ -124,6 +126,7 @@ WindowResizer.CLI.exe resize -t ".*.txt"
 WindowResizer.CLI.exe resize -c "X:\WindowResizer.config.json" -P "my-profile" -p "notepad.exe" -t ".*.txt" -v
 ```
 
+The highlighted row uses a dark inverted-style highlight background. Press `Esc` to quit without resizing.
 
 ## Build
 - .NET Framework 4.7.2
