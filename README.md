@@ -100,7 +100,7 @@ Options:
   -t, --title <title>      Process title, all windows of the process will be resized if not specified.
   -v, --verbose            Show more details.
   -w, --window             Direct placement
-  -i, --interactiv         Interactive to choose a window
+  -i, --interactive        Interactive to choose a window; supports arrow keys, mouse click/wheel, letter keys, Enter, and Esc.
   -?, -h, --help           Show help and usage information
 ```
 
@@ -126,7 +126,7 @@ WindowResizer.CLI.exe resize -t ".*.txt"
 WindowResizer.CLI.exe resize -c "X:\WindowResizer.config.json" -P "my-profile" -p "notepad.exe" -t ".*.txt" -v
 ```
 
-The highlighted row uses a dark inverted-style highlight background. Press `Esc` to quit without resizing.
+The highlighted row uses a dark inverted-style highlight background. Press `Esc` to quit without resizing. In interactive mode, use the mouse wheel to move the selection and left-click a visible row to choose it.
 
 ## Build
 - .NET Framework 4.7.2

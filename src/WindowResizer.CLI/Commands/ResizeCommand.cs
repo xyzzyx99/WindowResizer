@@ -108,6 +108,8 @@ namespace WindowResizer.CLI.Commands
             var originalForeground = Console.ForegroundColor;
             var originalBackground = Console.BackgroundColor;
             var originalCursorVisible = Console.CursorVisible;
+            int originalInputMode;
+            var mouseInputEnabled = TryPrepareSelectorMouseInput(out originalInputMode);
             var usingAlternateScreen = PrepareSelectorScreen();
             var startTop = 0;
             var pageSize = GetSelectorPageSize();
@@ -124,7 +126,7 @@ namespace WindowResizer.CLI.Commands
                     RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
                         highlightBackground, originalForeground, originalBackground, usingAlternateScreen);
 
-                    var key = ReadSelectorKey(targets, selectedIndex, ref offset, ref pageSize, startTop,
+                    var key = ReadSelectorKey(targets, ref selectedIndex, ref offset, ref pageSize, startTop,
                         highlightBackground, originalForeground, originalBackground, usingAlternateScreen,
                         ref lastConsoleWidth, ref lastConsoleHeight);
                     switch (key.Key)
@@ -169,6 +171,7 @@ namespace WindowResizer.CLI.Commands
             finally
             {
                 FinishSelectorScreen(usingAlternateScreen, originalCursorVisible);
+                RestoreSelectorMouseInput(mouseInputEnabled, originalInputMode);
                 Console.ForegroundColor = originalForeground;
                 Console.BackgroundColor = originalBackground;
                 TrySetConsoleCursorVisible(originalCursorVisible);
@@ -176,7 +179,7 @@ namespace WindowResizer.CLI.Commands
             }
         }
 
-        private static ConsoleKeyInfo ReadSelectorKey(List<WindowCmd.TargetWindow> targets, int selectedIndex, ref int offset,
+        private static ConsoleKeyInfo ReadSelectorKey(List<WindowCmd.TargetWindow> targets, ref int selectedIndex, ref int offset,
             ref int pageSize, int startTop, ConsoleColor highlightBackground,
             ConsoleColor originalForeground, ConsoleColor originalBackground, bool usingAlternateScreen,
             ref int lastConsoleWidth, ref int lastConsoleHeight)
@@ -188,9 +191,10 @@ namespace WindowResizer.CLI.Commands
                 // there is no key press and no redraw yet.
                 HideSelectorCursor(usingAlternateScreen);
 
-                if (Console.KeyAvailable)
+                ConsoleKeyInfo key;
+                if (TryReadSelectorConsoleInput(targets, ref selectedIndex, offset, pageSize, startTop, out key))
                 {
-                    return Console.ReadKey(true);
+                    return key;
                 }
 
                 if (HasConsoleSizeChanged(ref lastConsoleWidth, ref lastConsoleHeight))
@@ -202,8 +206,136 @@ namespace WindowResizer.CLI.Commands
                         highlightBackground, originalForeground, originalBackground, usingAlternateScreen);
                 }
 
+                HideSelectorCursor(usingAlternateScreen);
                 Thread.Sleep(50);
             }
+        }
+
+        private static bool TryReadSelectorConsoleInput(List<WindowCmd.TargetWindow> targets, ref int selectedIndex,
+            int offset, int pageSize, int startTop, out ConsoleKeyInfo key)
+        {
+            key = default(ConsoleKeyInfo);
+
+            var inputHandle = GetStdHandle(StdInputHandle);
+            if (inputHandle == IntPtr.Zero || inputHandle == new IntPtr(-1))
+            {
+                return TryReadLegacyKeyboardInput(out key);
+            }
+
+            uint eventCount;
+            if (!GetNumberOfConsoleInputEvents(inputHandle, out eventCount))
+            {
+                return TryReadLegacyKeyboardInput(out key);
+            }
+
+            while (eventCount > 0)
+            {
+                INPUT_RECORD record;
+                uint recordsRead;
+                if (!ReadConsoleInput(inputHandle, out record, 1, out recordsRead) || recordsRead == 0)
+                {
+                    return TryReadLegacyKeyboardInput(out key);
+                }
+
+                if (record.EventType == KeyEvent && record.Event.KeyEvent.bKeyDown)
+                {
+                    key = CreateConsoleKeyInfo(record.Event.KeyEvent);
+                    return true;
+                }
+
+                if (record.EventType == MouseEvent && TryHandleSelectorMouseEvent(record.Event.MouseEvent,
+                        targets, ref selectedIndex, offset, pageSize, startTop, out key))
+                {
+                    return true;
+                }
+
+                if (!GetNumberOfConsoleInputEvents(inputHandle, out eventCount))
+                {
+                    return false;
+                }
+            }
+
+            return TryReadLegacyKeyboardInput(out key);
+        }
+
+        private static bool TryReadLegacyKeyboardInput(out ConsoleKeyInfo key)
+        {
+            key = default(ConsoleKeyInfo);
+
+            try
+            {
+                if (!Console.KeyAvailable)
+                {
+                    return false;
+                }
+
+                key = Console.ReadKey(true);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryHandleSelectorMouseEvent(MOUSE_EVENT_RECORD mouseEvent,
+            List<WindowCmd.TargetWindow> targets, ref int selectedIndex, int offset, int pageSize, int startTop,
+            out ConsoleKeyInfo key)
+        {
+            key = default(ConsoleKeyInfo);
+
+            if (mouseEvent.dwEventFlags == MouseWheeled)
+            {
+                var wheelDelta = unchecked((short)((mouseEvent.dwButtonState >> 16) & 0xffff));
+                if (wheelDelta == 0 || targets.Count == 0)
+                {
+                    return false;
+                }
+
+                var steps = Math.Max(1, Math.Abs(wheelDelta) / WheelDelta);
+                selectedIndex = wheelDelta > 0
+                    ? Math.Max(0, selectedIndex - steps)
+                    : Math.Min(targets.Count - 1, selectedIndex + steps);
+                key = CreateNoOpKey();
+                return true;
+            }
+
+            var leftButtonDown = (mouseEvent.dwButtonState & LeftMostButtonPressed) != 0;
+            if (!leftButtonDown || (mouseEvent.dwEventFlags != 0 && mouseEvent.dwEventFlags != DoubleClick))
+            {
+                return false;
+            }
+
+            var listRow = mouseEvent.dwMousePosition.Y - (startTop + SelectorHeaderLines);
+            if (listRow < 0 || listRow >= pageSize)
+            {
+                return false;
+            }
+
+            var targetIndex = offset + listRow;
+            if (targetIndex < 0 || targetIndex >= targets.Count)
+            {
+                return false;
+            }
+
+            selectedIndex = targetIndex;
+            key = new ConsoleKeyInfo('\r', ConsoleKey.Enter, false, false, false);
+            return true;
+        }
+
+        private static ConsoleKeyInfo CreateNoOpKey()
+        {
+            return new ConsoleKeyInfo('\0', ConsoleKey.NoName, false, false, false);
+        }
+
+        private static ConsoleKeyInfo CreateConsoleKeyInfo(KEY_EVENT_RECORD keyEvent)
+        {
+            var modifiers = keyEvent.dwControlKeyState;
+            var shift = (modifiers & ShiftPressed) != 0;
+            var alt = (modifiers & (LeftAltPressed | RightAltPressed)) != 0;
+            var control = (modifiers & (LeftCtrlPressed | RightCtrlPressed)) != 0;
+
+            return new ConsoleKeyInfo(keyEvent.UnicodeChar, (ConsoleKey)keyEvent.wVirtualKeyCode, shift, alt, control);
         }
 
         private static bool HasConsoleSizeChanged(ref int lastWidth, ref int lastHeight)
@@ -281,6 +413,58 @@ namespace WindowResizer.CLI.Commands
             catch
             {
                 // Some redirected or unusual consoles may not allow cursor positioning.
+            }
+        }
+
+        private static bool TryPrepareSelectorMouseInput(out int originalInputMode)
+        {
+            originalInputMode = 0;
+
+            try
+            {
+                var handle = GetStdHandle(StdInputHandle);
+                if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+                {
+                    return false;
+                }
+
+                if (!GetConsoleMode(handle, out originalInputMode))
+                {
+                    return false;
+                }
+
+                var newMode = originalInputMode;
+                newMode |= EnableExtendedFlags;
+                newMode |= EnableMouseInput;
+                newMode |= EnableWindowInput;
+                newMode &= ~EnableQuickEditMode;
+
+                return SetConsoleMode(handle, newMode);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void RestoreSelectorMouseInput(bool mouseInputEnabled, int originalInputMode)
+        {
+            if (!mouseInputEnabled)
+            {
+                return;
+            }
+
+            try
+            {
+                var handle = GetStdHandle(StdInputHandle);
+                if (handle != IntPtr.Zero && handle != new IntPtr(-1))
+                {
+                    SetConsoleMode(handle, originalInputMode);
+                }
+            }
+            catch
+            {
+                // Ignore console cleanup failures.
             }
         }
 
@@ -386,14 +570,12 @@ namespace WindowResizer.CLI.Commands
 
         private static int GetSelectorPageSize()
         {
-            const int headerLines = 2;
-            const int footerLines = 1;
             const int minimumPageSize = 1;
             const int fallbackPageSize = 15;
 
             try
             {
-                var pageSize = Console.WindowHeight - headerLines - footerLines;
+                var pageSize = Console.WindowHeight - SelectorHeaderLines - SelectorFooterLines;
                 return Math.Max(minimumPageSize, pageSize);
             }
             catch
@@ -495,7 +677,7 @@ namespace WindowResizer.CLI.Commands
             SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
             WriteSelectorLine(row++, "Select a window/application:", width);
             SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
-            WriteSelectorLine(row++, "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, Enter to choose, Esc to quit.", width);
+            WriteSelectorLine(row++, "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel/click, Enter, Esc.", width);
 
             var visibleCount = Math.Min(pageSize, targets.Count - offset);
             for (var i = 0; i < pageSize; i++)
@@ -714,8 +896,26 @@ namespace WindowResizer.CLI.Commands
         }
 
 
+        private const int SelectorHeaderLines = 2;
+        private const int SelectorFooterLines = 1;
+        private const int StdInputHandle = -10;
         private const int StdOutputHandle = -11;
         private const int EnableVirtualTerminalProcessing = 0x0004;
+        private const int EnableMouseInput = 0x0010;
+        private const int EnableWindowInput = 0x0008;
+        private const int EnableQuickEditMode = 0x0040;
+        private const int EnableExtendedFlags = 0x0080;
+        private const ushort KeyEvent = 0x0001;
+        private const ushort MouseEvent = 0x0002;
+        private const uint LeftMostButtonPressed = 0x0001;
+        private const uint DoubleClick = 0x0002;
+        private const uint MouseWheeled = 0x0004;
+        private const int WheelDelta = 120;
+        private const uint RightAltPressed = 0x0001;
+        private const uint LeftAltPressed = 0x0002;
+        private const uint RightCtrlPressed = 0x0004;
+        private const uint LeftCtrlPressed = 0x0008;
+        private const uint ShiftPressed = 0x0010;
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern IntPtr GetStdHandle(int nStdHandle);
@@ -725,6 +925,57 @@ namespace WindowResizer.CLI.Commands
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool SetConsoleMode(IntPtr hConsoleHandle, int dwMode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetNumberOfConsoleInputEvents(IntPtr hConsoleInput, out uint lpcNumberOfEvents);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool ReadConsoleInput(IntPtr hConsoleInput, out INPUT_RECORD lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct INPUT_RECORD
+        {
+            public ushort EventType;
+            public INPUT_RECORD_UNION Event;
+        }
+
+        [StructLayout(LayoutKind.Explicit)]
+        private struct INPUT_RECORD_UNION
+        {
+            [FieldOffset(0)]
+            public KEY_EVENT_RECORD KeyEvent;
+
+            [FieldOffset(0)]
+            public MOUSE_EVENT_RECORD MouseEvent;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KEY_EVENT_RECORD
+        {
+            [MarshalAs(UnmanagedType.Bool)]
+            public bool bKeyDown;
+            public ushort wRepeatCount;
+            public ushort wVirtualKeyCode;
+            public ushort wVirtualScanCode;
+            public char UnicodeChar;
+            public uint dwControlKeyState;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MOUSE_EVENT_RECORD
+        {
+            public COORD dwMousePosition;
+            public uint dwButtonState;
+            public uint dwControlKeyState;
+            public uint dwEventFlags;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct COORD
+        {
+            public short X;
+            public short Y;
+        }
 
         [StructLayout(LayoutKind.Sequential)]
         private struct ConsoleCursorInfo
