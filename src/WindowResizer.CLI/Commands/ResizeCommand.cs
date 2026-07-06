@@ -109,7 +109,6 @@ namespace WindowResizer.CLI.Commands
             var originalBackground = Console.BackgroundColor;
             var originalCursorVisible = Console.CursorVisible;
             var highlightBackground = GetDarkInvertedConsoleColor(originalBackground);
-            var highlightForeground = GetReadableForeground(highlightBackground);
 
             try
             {
@@ -117,7 +116,7 @@ namespace WindowResizer.CLI.Commands
                 while (true)
                 {
                     RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
-                        highlightForeground, highlightBackground, originalForeground, originalBackground);
+                        highlightBackground, originalForeground, originalBackground);
 
                     var key = Console.ReadKey(true);
                     switch (key.Key)
@@ -165,7 +164,7 @@ namespace WindowResizer.CLI.Commands
         }
 
         private static void RenderTargetWindowSelector(List<WindowCmd.TargetWindow> targets, int selectedIndex, ref int offset,
-            int pageSize, int startTop, ConsoleColor highlightForeground, ConsoleColor highlightBackground,
+            int pageSize, int startTop, ConsoleColor highlightBackground,
             ConsoleColor originalForeground, ConsoleColor originalBackground)
         {
             if (selectedIndex < offset)
@@ -189,14 +188,18 @@ namespace WindowResizer.CLI.Commands
             {
                 var targetIndex = offset + i;
                 var selected = targetIndex == selectedIndex;
+                var rowBackground = selected ? highlightBackground : originalBackground;
 
-                Console.ForegroundColor = selected ? highlightForeground : originalForeground;
-                Console.BackgroundColor = selected ? highlightBackground : originalBackground;
+                Console.BackgroundColor = rowBackground;
 
-                var line = targetIndex < targets.Count
-                    ? PlainFormatTargetWindow(targets[targetIndex])
-                    : string.Empty;
-                WriteSelectorLine(line, width);
+                if (targetIndex < targets.Count)
+                {
+                    WriteTargetWindowSelectorLine(targets[targetIndex], width, originalForeground, rowBackground);
+                }
+                else
+                {
+                    WriteSelectorLine(string.Empty, width);
+                }
             }
 
             Console.ForegroundColor = originalForeground;
@@ -225,6 +228,49 @@ namespace WindowResizer.CLI.Commands
 
             Console.Write(text.PadRight(width));
             Console.WriteLine();
+        }
+
+        private static void WriteTargetWindowSelectorLine(WindowCmd.TargetWindow target, int width,
+            ConsoleColor originalForeground, ConsoleColor background)
+        {
+            var title = string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title;
+            var used = 0;
+
+            Console.BackgroundColor = background;
+            used += WriteSelectorSegment(target.ProcessName, width - used, ConsoleColor.Green, background);
+            used += WriteSelectorSegment(" | ", width - used, ConsoleColor.DarkGray, background);
+            used += WriteSelectorSegment(title, width - used, originalForeground, background);
+            used += WriteSelectorSegment($" (0x{target.Handle.ToInt64():X})", width - used, ConsoleColor.DarkGray, background);
+
+            if (used < width)
+            {
+                Console.ForegroundColor = originalForeground;
+                Console.BackgroundColor = background;
+                Console.Write(new string(' ', width - used));
+            }
+
+            Console.WriteLine();
+        }
+
+        private static int WriteSelectorSegment(string text, int availableWidth,
+            ConsoleColor foreground, ConsoleColor background)
+        {
+            if (availableWidth <= 0)
+            {
+                return 0;
+            }
+
+            if (text.Length > availableWidth)
+            {
+                text = availableWidth == 1
+                    ? "…"
+                    : text.Substring(0, availableWidth - 1) + "…";
+            }
+
+            Console.ForegroundColor = foreground;
+            Console.BackgroundColor = background;
+            Console.Write(text);
+            return text.Length;
         }
 
         private static ConsoleColor GetDarkInvertedConsoleColor(ConsoleColor color)
@@ -265,24 +311,6 @@ namespace WindowResizer.CLI.Commands
                     return ConsoleColor.Black;
                 default:
                     return ConsoleColor.DarkGray;
-            }
-        }
-
-        private static ConsoleColor GetReadableForeground(ConsoleColor background)
-        {
-            switch (background)
-            {
-                case ConsoleColor.Black:
-                case ConsoleColor.DarkBlue:
-                case ConsoleColor.DarkGreen:
-                case ConsoleColor.DarkCyan:
-                case ConsoleColor.DarkRed:
-                case ConsoleColor.DarkMagenta:
-                case ConsoleColor.DarkYellow:
-                case ConsoleColor.DarkGray:
-                    return ConsoleColor.White;
-                default:
-                    return ConsoleColor.Black;
             }
         }
 
