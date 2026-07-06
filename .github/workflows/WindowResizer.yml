@@ -42,9 +42,22 @@ jobs:
       - name: Build CLI
         run: .\Installer\build-cli.ps1 ${{ steps.get_version.outputs.VERSION }}
 
-      - name: Rename
-        run: Move-Item .\Releases\Setup.exe .\Releases\WindowResizer-${{ steps.get_version.outputs.VERSION }}.exe
-
+      - name: Rename installer
+        shell: pwsh
+        run: |
+          Write-Host "Files in Releases before rename:"
+          Get-ChildItem .\Releases -Recurse
+      
+          $setup = Get-ChildItem .\Releases -File -Filter "*.exe" |
+            Where-Object { $_.Name -like "*Setup*" -or $_.Name -eq "Setup.exe" } |
+            Select-Object -First 1
+      
+          if (-not $setup) {
+            throw "No setup EXE found in .\Releases. Squirrel did not create Setup.exe."
+          }
+      
+          Move-Item $setup.FullName ".\Releases\WindowResizer-${{ steps.get_version.outputs.VERSION }}.exe"
+          
       - name: Show files
         run: Get-ChildItem .\Releases
 
