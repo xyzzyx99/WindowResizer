@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Spectre.Console;
 using WindowResizer.Base;
@@ -103,11 +104,12 @@ namespace WindowResizer.CLI.Commands
 
             var selectedIndex = 0;
             var offset = 0;
-            var startTop = PrepareSelectorScreen();
-            var pageSize = GetSelectorPageSize();
             var originalForeground = Console.ForegroundColor;
             var originalBackground = Console.BackgroundColor;
             var originalCursorVisible = Console.CursorVisible;
+            var usingAlternateScreen = PrepareSelectorScreen();
+            var startTop = 0;
+            var pageSize = GetSelectorPageSize();
             var highlightBackground = GetDarkInvertedConsoleColor(originalBackground);
 
             try
@@ -164,24 +166,89 @@ namespace WindowResizer.CLI.Commands
                 Console.ForegroundColor = originalForeground;
                 Console.BackgroundColor = originalBackground;
                 Console.CursorVisible = originalCursorVisible;
+                FinishSelectorScreen(usingAlternateScreen);
             }
         }
 
-        private static int PrepareSelectorScreen()
+        private static bool PrepareSelectorScreen()
         {
+            var usingAlternateScreen = TryEnterAlternateScreen();
+
             try
             {
-                // Use a full-screen selector area instead of drawing below the
-                // current prompt. Drawing below existing terminal contents can
-                // scroll the console and invalidate the saved start row.
+                // Use a full-screen selector area. When alternate screen support
+                // is available, the original terminal contents are restored after
+                // choosing a window or pressing Esc.
                 Console.Clear();
                 Console.SetCursorPosition(0, 0);
-                return Console.CursorTop;
             }
             catch
             {
-                // Fall back to the current cursor position for unusual consoles.
-                return Console.CursorTop;
+                // Some redirected or unusual consoles may not allow cursor positioning.
+            }
+
+            return usingAlternateScreen;
+        }
+
+        private static void FinishSelectorScreen(bool usingAlternateScreen)
+        {
+            if (usingAlternateScreen)
+            {
+                TryLeaveAlternateScreen();
+            }
+        }
+
+        private static bool TryEnterAlternateScreen()
+        {
+            try
+            {
+                if (!TryEnableVirtualTerminalProcessing())
+                {
+                    return false;
+                }
+
+                Console.Write("\x1b[?1049h");
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void TryLeaveAlternateScreen()
+        {
+            try
+            {
+                Console.Write("\x1b[?1049l");
+            }
+            catch
+            {
+                // Ignore console cleanup failures.
+            }
+        }
+
+        private static bool TryEnableVirtualTerminalProcessing()
+        {
+            try
+            {
+                var handle = GetStdHandle(StdOutputHandle);
+                if (handle == IntPtr.Zero || handle == new IntPtr(-1))
+                {
+                    return false;
+                }
+
+                int mode;
+                if (!GetConsoleMode(handle, out mode))
+                {
+                    return false;
+                }
+
+                return SetConsoleMode(handle, mode | EnableVirtualTerminalProcessing);
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -317,16 +384,6 @@ namespace WindowResizer.CLI.Commands
         {
             Console.ForegroundColor = originalForeground;
             Console.BackgroundColor = originalBackground;
-            try
-            {
-                var nextRow = Math.Min(startTop + pageSize + 3, Console.BufferHeight - 1);
-                Console.SetCursorPosition(0, nextRow);
-                Console.WriteLine();
-            }
-            catch
-            {
-                Console.WriteLine();
-            }
         }
 
         private static void WriteSelectorLine(int row, string text, int width)
@@ -423,6 +480,19 @@ namespace WindowResizer.CLI.Commands
             Console.Write(text);
             return text.Length;
         }
+
+
+        private const int StdOutputHandle = -11;
+        private const int EnableVirtualTerminalProcessing = 0x0004;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr GetStdHandle(int nStdHandle);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetConsoleMode(IntPtr hConsoleHandle, out int lpMode);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetConsoleMode(IntPtr hConsoleHandle, int dwMode);
 
         private static ConsoleColor GetDarkInvertedConsoleColor(ConsoleColor color)
         {
