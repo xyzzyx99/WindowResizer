@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.CommandLine;
+using System.CommandLine.Invocation;
 using System.Linq;
 using System.Threading.Tasks;
 using Spectre.Console;
@@ -20,11 +21,21 @@ namespace WindowResizer.CLI.Commands
             AddOption(processOption);
             var titleOption = new TitleOption();
             AddOption(titleOption);
+            var windowOption = new WindowOption();
+            AddOption(windowOption);
             var verboseOption = new VerboseOption();
             AddOption(verboseOption);
 
-            this.SetHandler((config, profile, process, title, verbose) =>
+            this.SetHandler((InvocationContext context) =>
             {
+                var config = context.ParseResult.GetValueForOption(configOption);
+                var profile = context.ParseResult.GetValueForOption(profileOption);
+                var process = context.ParseResult.GetValueForOption(processOption);
+                var title = context.ParseResult.GetValueForOption(titleOption);
+                var verbose = context.ParseResult.GetValueForOption(verboseOption);
+                var windowOptionWasUsed = context.ParseResult.FindResultFor(windowOption) != null;
+                var windowArguments = context.ParseResult.GetValueForOption(windowOption) ?? new int[0];
+
                 void VerboseInfo(List<WindowCmd.TargetWindow> lists)
                 {
                     if (verbose)
@@ -33,9 +44,13 @@ namespace WindowResizer.CLI.Commands
                     }
                 }
 
-                var success = WindowCmd.Resize(config?.FullName, profile, process, title, Output.Error, VerboseInfo);
-                return Task.FromResult(success ? 0 : 1);
-            }, configOption, profileOption, processOption, titleOption, verboseOption);
+                var success = windowOptionWasUsed
+                    ? WindowCmd.ResizeDirect(process, title, windowArguments, Output.Error, VerboseInfo)
+                    : WindowCmd.Resize(config?.FullName, profile, process, title, Output.Error, VerboseInfo);
+
+                context.ExitCode = success ? 0 : 1;
+                return Task.CompletedTask;
+            });
         }
 
         private static void Verbose(List<WindowCmd.TargetWindow> lists)

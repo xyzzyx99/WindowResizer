@@ -74,6 +74,30 @@ namespace WindowResizer.CLI.Commands
         }
     }
 
+    public class WindowOption : Option<int[]>
+    {
+        public WindowOption() : base(
+            aliases: new[]
+            {
+                "--window",
+                "-w"
+            },
+            description: "Direct window coordinates: -w [left] [top] [right] [bottom]. Skips config and uses the foreground window when --process is omitted.")
+        {
+            IsRequired = false;
+            AllowMultipleArgumentsPerToken = true;
+            Arity = ArgumentArity.ZeroOrMore;
+
+            AddValidator(result =>
+            {
+                if (result.Tokens.Count > 4)
+                {
+                    result.ErrorMessage = "The -w/--window option accepts at most four numbers: left top right bottom.";
+                }
+            });
+        }
+    }
+
     public class VerboseOption : Option<bool>
     {
         public VerboseOption() : base(

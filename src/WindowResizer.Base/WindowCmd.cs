@@ -2,6 +2,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Windows.Forms;
+using WindowResizer.Common.Windows;
 using WindowResizer.Configuration;
 using WindowResizer.Core.WindowControl;
 using static WindowResizer.Base.WindowUtils;
@@ -75,6 +77,50 @@ public static class WindowCmd
         return true;
     }
 
+    public static bool ResizeDirect(string? process, string? title, IReadOnlyList<int> windowArguments,
+        Action<string>? onError = null,
+        Action<List<TargetWindow>>? onDebug = null)
+    {
+        if (windowArguments.Count > 4)
+        {
+            onError?.Invoke("The -w/--window option accepts at most four numbers: left top right bottom.");
+            return false;
+        }
+
+        var targets = GetTargets(process, title, onError);
+        if (!targets.Any())
+        {
+            onError?.Invoke(string.IsNullOrWhiteSpace(process)
+                ? "No foreground window found."
+                : $"No matching windows found for process <{process}>.");
+            onDebug?.Invoke(targets);
+            return false;
+        }
+
+        foreach (var tp in targets)
+        {
+            try
+            {
+                var currentRect = Resizer.GetRect(tp.Handle);
+                var targetRect = BuildDirectRect(tp.Handle, currentRect, windowArguments);
+                var placement = Resizer.GetPlacement(tp.Handle);
+                if (!Resizer.SetPlacement(tp.Handle, targetRect, placement.MaximizedPosition, WindowState.Normal))
+                {
+                    tp.Result = "Unable to move or resize the window.";
+                    onError?.Invoke($"Unable to move or resize process <{tp.ProcessName}>.");
+                }
+            }
+            catch (Exception e)
+            {
+                tp.Result = e.Message;
+                onError?.Invoke($"Unable to move or resize process <{tp.ProcessName}>: {e.Message}");
+            }
+        }
+
+        onDebug?.Invoke(targets);
+        return targets.Any(t => string.IsNullOrEmpty(t.Result));
+    }
+
     public class TargetWindow
     {
         public TargetWindow(IntPtr handle, string processName, string? title)
@@ -91,6 +137,94 @@ public static class WindowCmd
         public string? Title { get; }
 
         public string Result { get; set; } = string.Empty;
+    }
+
+    private static List<TargetWindow> GetTargets(string? process, string? title, Action<string>? onError)
+    {
+        var targets = new List<TargetWindow>();
+        if (string.IsNullOrWhiteSpace(process))
+        {
+            var foreground = Resizer.GetForegroundHandle();
+            if (IsProcessAvailable(foreground, out string processName, null))
+            {
+                targets.Add(new TargetWindow(foreground, processName, Resizer.GetWindowTitle(foreground)));
+            }
+
+            return targets;
+        }
+
+        var windows = Resizer.GetOpenWindows();
+        windows.Reverse();
+
+        Regex? titleRegex = null;
+        if (!string.IsNullOrWhiteSpace(title))
+        {
+            try
+            {
+                titleRegex = new Regex(title);
+            }
+            catch (Exception e)
+            {
+                onError?.Invoke($"Invalid title regex <{title}>: {e.Message}");
+                return targets;
+            }
+        }
+
+        foreach (var handler in windows)
+        {
+            if (!IsProcessAvailable(handler, out string processName, null))
+            {
+                continue;
+            }
+
+            if (!processName.Equals(process, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var windowTitle = Resizer.GetWindowTitle(handler);
+            if (titleRegex != null && (string.IsNullOrEmpty(windowTitle) || !titleRegex.IsMatch(windowTitle)))
+            {
+                continue;
+            }
+
+            targets.Add(new TargetWindow(handler, processName, windowTitle));
+        }
+
+        return targets;
+    }
+
+    private static Rect BuildDirectRect(IntPtr handle, Rect currentRect, IReadOnlyList<int> windowArguments)
+    {
+        var currentWidth = currentRect.Right - currentRect.Left;
+        var currentHeight = currentRect.Bottom - currentRect.Top;
+
+        if (windowArguments.Count == 0)
+        {
+            var workingArea = Screen.FromHandle(handle).WorkingArea;
+            var width = workingArea.Width * 2 / 3;
+            var height = workingArea.Height * 3 / 4;
+            var left = workingArea.Left + (workingArea.Width - width) / 2;
+            var top = workingArea.Top + (workingArea.Height - height) / 2;
+            return new Rect(left, top, left + width, top + height);
+        }
+
+        var targetLeft = windowArguments[0];
+        var targetTop = windowArguments.Count >= 2 ? windowArguments[1] : currentRect.Top;
+        var targetRight = windowArguments.Count >= 3 ? windowArguments[2] : targetLeft + currentWidth;
+        var targetBottom = windowArguments.Count >= 4 ? windowArguments[3] : targetTop + currentHeight;
+
+        if (targetRight <= targetLeft)
+        {
+            targetRight = targetLeft + currentWidth;
+        }
+
+        if (targetBottom <= targetTop)
+        {
+            targetBottom = targetTop + currentHeight;
+        }
+
+        return new Rect(targetLeft, targetTop, targetRight, targetBottom);
     }
 
     private static Config? LoadConfig(string? configPath, string? profileName, Action<string>? onError)
