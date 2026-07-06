@@ -229,7 +229,7 @@ namespace WindowResizer
 
             if (e.ColumnIndex == ProcessesGrid.Columns["Fixed"]?.Index)
             {
-                ApplyFixedStateToOpenWindows(ConfigFactory.Current, true);
+                WindowUtils.ApplyFixedStateToOpenWindows(ConfigFactory.Current, true);
             }
 
             ConfigFactory.Save();
@@ -289,10 +289,11 @@ namespace WindowResizer
                 e.RowIndex >= 0 &&
                 e.RowIndex < ConfigFactory.Current.WindowSizes.Count)
             {
-                if (ProcessesGrid.Rows[e.RowIndex].DataBoundItem is WindowSize { Fixed: true } windowSize)
+                var windowSize = ProcessesGrid.Rows[e.RowIndex].DataBoundItem as WindowSize;
+                if (windowSize != null && windowSize.Fixed)
                 {
                     windowSize.Fixed = false;
-                    ApplyFixedStateToOpenWindows(ConfigFactory.Current, true);
+                    WindowUtils.ApplyFixedStateToOpenWindows(ConfigFactory.Current, true);
                 }
 
                 ConfigFactory.Current.WindowSizes.RemoveAt(e.RowIndex);
