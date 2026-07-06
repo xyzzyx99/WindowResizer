@@ -43,6 +43,12 @@ internal static class NativeMethods
     internal static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll")]
+    internal static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    internal static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
     internal static extern bool EnumWindows(EnumWindowsProc enumFunc, int lParam);
 
     [DllImport("user32.dll")]

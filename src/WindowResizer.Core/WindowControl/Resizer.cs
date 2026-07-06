@@ -67,6 +67,39 @@ public static class Resizer
         return NativeMethods.IsWindowVisible(hWnd);
     }
 
+    public static bool IsWindowMinimized(IntPtr hWnd)
+    {
+        return hWnd != IntPtr.Zero && NativeMethods.IsIconic(hWnd);
+    }
+
+    public static void RestoreWindowIfMinimized(IntPtr hWnd)
+    {
+        if (IsWindowMinimized(hWnd))
+        {
+            ShowWindow(hWnd, (int)ShowWindowCommands.Restore);
+        }
+    }
+
+    public static void BringWindowToTop(IntPtr hWnd)
+    {
+        if (hWnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        SetWindowPos(
+            hWnd,
+            0,
+            0,
+            0,
+            0,
+            0,
+            (int)(SetWindowPosFlags.SWP_NOMOVE
+                  | SetWindowPosFlags.SWP_NOSIZE
+                  | SetWindowPosFlags.SWP_NOOWNERZORDER));
+        SetForegroundWindow(hWnd);
+    }
+
     public static string? GetWindowTitle(IntPtr hWnd)
     {
         const int nChars = 256;
@@ -118,10 +151,12 @@ public static class Resizer
         if (hWnd == IntPtr.Zero)
             return false;
 
+        RestoreWindowIfMinimized(hWnd);
         ShowWindow(hWnd, (int)ShowWindowCommands.Normal);
         var result = SetWindowPos(hWnd, 0, rect.Left, rect.Top,
             rect.Right - rect.Left, rect.Bottom - rect.Top,
             (int)SetWindowPosFlags.SWP_NOOWNERZORDER);
+        BringWindowToTop(hWnd);
         return result == IntPtr.Zero;
     }
 
@@ -228,15 +263,16 @@ public static class Resizer
         if (hWnd == IntPtr.Zero)
             return false;
 
+        RestoreWindowIfMinimized(hWnd);
         ShowWindow(hWnd, (int)ShowWindowCommands.Normal);
 
         var placement = NativeMethods.WindowPlacement.Default;
         placement.MaxPosition = maximizedPosition;
         placement.NormalPosition = rect;
-        placement.ShowCmd = state switch
+        var targetState = state == WindowState.Minimized ? WindowState.Normal : state;
+        placement.ShowCmd = targetState switch
         {
             WindowState.Maximized => ShowWindowCommands.ShowMaximized,
-            WindowState.Minimized => ShowWindowCommands.ShowMinimized,
             _ => ShowWindowCommands.Normal,
         };
 
@@ -248,7 +284,9 @@ public static class Resizer
             SetWindowPlacement(hWnd, ref placement);
         }
 
-        return SetWindowPlacement(hWnd, ref placement);
+        var result = SetWindowPlacement(hWnd, ref placement);
+        BringWindowToTop(hWnd);
+        return result;
     }
 
     // ReSharper disable once UnusedMember.Local
