@@ -103,8 +103,8 @@ namespace WindowResizer.CLI.Commands
 
             var selectedIndex = 0;
             var offset = 0;
-            var startTop = EnsureSelectorStartTop(targets.Count);
-            var pageSize = GetSelectorPageSize(startTop);
+            var startTop = PrepareSelectorScreen();
+            var pageSize = GetSelectorPageSize();
             var originalForeground = Console.ForegroundColor;
             var originalBackground = Console.BackgroundColor;
             var originalCursorVisible = Console.CursorVisible;
@@ -115,7 +115,7 @@ namespace WindowResizer.CLI.Commands
                 Console.CursorVisible = false;
                 while (true)
                 {
-                    pageSize = GetSelectorPageSize(startTop);
+                    pageSize = GetSelectorPageSize();
                     RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
                         highlightBackground, originalForeground, originalBackground);
 
@@ -167,74 +167,40 @@ namespace WindowResizer.CLI.Commands
             }
         }
 
-        private static int EnsureSelectorStartTop(int targetCount)
+        private static int PrepareSelectorScreen()
         {
-            var startTop = Console.CursorTop;
-
             try
             {
-                var desiredRows = GetDesiredSelectorRows(targetCount);
-                while (GetAvailableSelectorRows(startTop) < desiredRows)
-                {
-                    Console.WriteLine();
-                }
+                // Use a full-screen selector area instead of drawing below the
+                // current prompt. Drawing below existing terminal contents can
+                // scroll the console and invalidate the saved start row.
+                Console.Clear();
+                Console.SetCursorPosition(0, 0);
+                return Console.CursorTop;
             }
             catch
             {
-                // Some redirected or unusual consoles can throw for WindowTop/WindowHeight.
-                // Fall back to the current cursor position and the minimum selector height.
+                // Fall back to the current cursor position for unusual consoles.
+                return Console.CursorTop;
             }
-
-            return startTop;
         }
 
-        private static int GetDesiredSelectorRows(int targetCount)
+        private static int GetSelectorPageSize()
         {
             const int headerLines = 2;
             const int footerLines = 1;
-            const int reservedBottomLines = 1;
             const int minimumPageSize = 1;
             const int fallbackPageSize = 15;
 
             try
             {
-                var windowRows = Math.Max(1, Console.WindowHeight);
-                var maxPageSize = Math.Max(minimumPageSize, windowRows - headerLines - footerLines - reservedBottomLines);
-                var desiredPageSize = Math.Max(minimumPageSize, Math.Min(Math.Max(1, targetCount), maxPageSize));
-                return Math.Min(windowRows, headerLines + footerLines + reservedBottomLines + desiredPageSize);
-            }
-            catch
-            {
-                return headerLines + footerLines + reservedBottomLines + Math.Min(Math.Max(1, targetCount), fallbackPageSize);
-            }
-        }
-
-        private static int GetSelectorPageSize(int startTop)
-        {
-            const int headerLines = 2;
-            const int footerLines = 1;
-            const int reservedBottomLines = 1;
-            const int minimumPageSize = 1;
-            const int fallbackPageSize = 15;
-
-            try
-            {
-                // Keep one unused row below the selector. If the footer is written on the
-                // last visible terminal row, Console.WriteLine() scrolls the window and the
-                // saved selector start row appears to jump or disappear.
-                var pageSize = GetAvailableSelectorRows(startTop) - headerLines - footerLines - reservedBottomLines;
+                var pageSize = Console.WindowHeight - headerLines - footerLines;
                 return Math.Max(minimumPageSize, pageSize);
             }
             catch
             {
                 return fallbackPageSize;
             }
-        }
-
-        private static int GetAvailableSelectorRows(int startTop)
-        {
-            var visibleBottom = Console.WindowTop + Console.WindowHeight;
-            return Math.Max(0, visibleBottom - startTop);
         }
 
         private static void JumpToProcessGroupByKey(List<WindowCmd.TargetWindow> targets, ConsoleKeyInfo key, ref int selectedIndex)
@@ -312,11 +278,11 @@ namespace WindowResizer.CLI.Commands
             }
 
             var width = Math.Max(20, Console.BufferWidth - 1);
-            Console.SetCursorPosition(0, startTop);
+            var row = startTop;
             Console.ForegroundColor = originalForeground;
             Console.BackgroundColor = originalBackground;
-            WriteSelectorLine("Select a window/application:", width);
-            WriteSelectorLine("Use ↑/↓, PgUp/PgDn, Home/End, letter keys, Enter to choose, Esc to quit.", width);
+            WriteSelectorLine(row++, "Select a window/application:", width);
+            WriteSelectorLine(row++, "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, Enter to choose, Esc to quit.", width);
 
             var visibleCount = Math.Min(pageSize, targets.Count - offset);
             for (var i = 0; i < pageSize; i++)
@@ -325,6 +291,7 @@ namespace WindowResizer.CLI.Commands
                 var selected = targetIndex == selectedIndex;
                 var rowBackground = selected ? highlightBackground : originalBackground;
 
+                Console.SetCursorPosition(0, row++);
                 Console.BackgroundColor = rowBackground;
 
                 if (targetIndex < targets.Count)
@@ -342,7 +309,7 @@ namespace WindowResizer.CLI.Commands
             var footer = targets.Count > visibleCount
                 ? $"Showing {offset + 1}-{offset + visibleCount} of {targets.Count}."
                 : $"Showing {targets.Count} window(s).";
-            WriteSelectorLine(footer, width);
+            WriteSelectorLine(row, footer, width);
         }
 
         private static void FinishTargetWindowSelector(int startTop, int pageSize,
@@ -350,8 +317,22 @@ namespace WindowResizer.CLI.Commands
         {
             Console.ForegroundColor = originalForeground;
             Console.BackgroundColor = originalBackground;
-            Console.SetCursorPosition(0, startTop + pageSize + 3);
-            Console.WriteLine();
+            try
+            {
+                var nextRow = Math.Min(startTop + pageSize + 3, Console.BufferHeight - 1);
+                Console.SetCursorPosition(0, nextRow);
+                Console.WriteLine();
+            }
+            catch
+            {
+                Console.WriteLine();
+            }
+        }
+
+        private static void WriteSelectorLine(int row, string text, int width)
+        {
+            Console.SetCursorPosition(0, row);
+            WriteSelectorLine(text, width);
         }
 
         private static void WriteSelectorLine(string text, int width)
@@ -362,7 +343,6 @@ namespace WindowResizer.CLI.Commands
             }
 
             Console.Write(text.PadRight(width));
-            Console.WriteLine();
         }
 
         private static void WriteTargetWindowSelectorLine(WindowCmd.TargetWindow target, int width, bool selected,
@@ -389,7 +369,6 @@ namespace WindowResizer.CLI.Commands
                 Console.Write(new string(' ', width - used));
             }
 
-            Console.WriteLine();
         }
 
         private static int WriteProcessInfo(WindowCmd.TargetWindow target, int availableWidth, bool selected,
