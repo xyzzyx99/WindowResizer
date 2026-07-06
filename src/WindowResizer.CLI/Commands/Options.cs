@@ -1,4 +1,4 @@
-using System.CommandLine;
+﻿using System.CommandLine;
 using System.IO;
 using System.Linq;
 
@@ -106,7 +106,7 @@ namespace WindowResizer.CLI.Commands
                 "--interactive",
                 "-i"
             },
-            description: "Interactively choose a visible top-level window/application before resizing. Use arrow keys and Enter, or Esc to quit. The selected row uses a dark inverted highlight background.")
+            description: "Interactively choose a visible top-level window/application before resizing. Use arrow keys and Enter, or Esc to quit. Shows PID and marks the frontmost listed window for duplicate processes as Top. The selected row uses a dark inverted highlight background.")
         {
             IsRequired = false;
             AllowMultipleArgumentsPerToken = false;

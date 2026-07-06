@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.CommandLine;
 using System.CommandLine.Invocation;
@@ -194,7 +194,7 @@ namespace WindowResizer.CLI.Commands
 
                 if (targetIndex < targets.Count)
                 {
-                    WriteTargetWindowSelectorLine(targets[targetIndex], width, originalForeground, rowBackground);
+                    WriteTargetWindowSelectorLine(targets[targetIndex], width, selected, originalForeground, rowBackground);
                 }
                 else
                 {
@@ -230,21 +230,33 @@ namespace WindowResizer.CLI.Commands
             Console.WriteLine();
         }
 
-        private static void WriteTargetWindowSelectorLine(WindowCmd.TargetWindow target, int width,
+        private static void WriteTargetWindowSelectorLine(WindowCmd.TargetWindow target, int width, bool selected,
             ConsoleColor originalForeground, ConsoleColor background)
         {
             var title = string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title;
             var used = 0;
+            var processText = target.ProcessId > 0
+                ? $"{target.ProcessName} {target.ProcessId}"
+                : target.ProcessName;
+            if (target.IsTopForProcess)
+            {
+                processText += " Top";
+            }
+
+            var processForeground = selected ? originalForeground : ConsoleColor.Green;
+            var mutedForeground = selected ? originalForeground : ConsoleColor.DarkGray;
+            var titleForeground = originalForeground;
 
             Console.BackgroundColor = background;
-            used += WriteSelectorSegment(target.ProcessName, width - used, ConsoleColor.Green, background);
-            used += WriteSelectorSegment(" | ", width - used, ConsoleColor.DarkGray, background);
-            used += WriteSelectorSegment(title, width - used, originalForeground, background);
-            used += WriteSelectorSegment($" (0x{target.Handle.ToInt64():X})", width - used, ConsoleColor.DarkGray, background);
+            used += WriteSelectorSegment(selected ? "> " : "  ", width - used, titleForeground, background);
+            used += WriteSelectorSegment(processText, width - used, processForeground, background);
+            used += WriteSelectorSegment(" | ", width - used, mutedForeground, background);
+            used += WriteSelectorSegment(title, width - used, titleForeground, background);
+            used += WriteSelectorSegment($" (0x{target.Handle.ToInt64():X})", width - used, mutedForeground, background);
 
             if (used < width)
             {
-                Console.ForegroundColor = originalForeground;
+                Console.ForegroundColor = titleForeground;
                 Console.BackgroundColor = background;
                 Console.Write(new string(' ', width - used));
             }

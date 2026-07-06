@@ -36,7 +36,7 @@ public static class WindowCmd
 
             var t = Resizer.GetWindowTitle(handler);
 
-            targets.Add(new TargetWindow(handler, processName, t));
+            targets.Add(CreateTargetWindow(handler, processName));
         }
 
         bool resizeAllProcesses = string.IsNullOrEmpty(process);
@@ -145,16 +145,21 @@ public static class WindowCmd
 
     public class TargetWindow
     {
-        public TargetWindow(IntPtr handle, string processName, string? title)
+        public TargetWindow(IntPtr handle, string processName, string? title, int processId = 0)
         {
             Handle = handle;
             ProcessName = processName;
             Title = title;
+            ProcessId = processId;
         }
 
         public IntPtr Handle { get; }
 
         public string ProcessName { get; }
+
+        public int ProcessId { get; }
+
+        public bool IsTopForProcess { get; set; }
 
         public string? Title { get; }
 
@@ -189,6 +194,7 @@ public static class WindowCmd
             targets = targets.Where(i => !string.IsNullOrEmpty(i.Title) && titleRegex.IsMatch(i.Title!)).ToList();
         }
 
+        MarkTopForProcess(targets);
         return targets;
     }
 
@@ -204,10 +210,51 @@ public static class WindowCmd
                 continue;
             }
 
-            targets.Add(new TargetWindow(handler, processName, Resizer.GetWindowTitle(handler)));
+            targets.Add(CreateTargetWindow(handler, processName));
         }
 
         return targets;
+    }
+
+    private static TargetWindow CreateTargetWindow(IntPtr handle, string processName)
+    {
+        return new TargetWindow(handle, processName, Resizer.GetWindowTitle(handle), GetProcessId(handle));
+    }
+
+    private static int GetProcessId(IntPtr handle)
+    {
+        try
+        {
+            return Resizer.GetRealProcess(handle)?.Id ?? 0;
+        }
+        catch (Exception)
+        {
+            return 0;
+        }
+    }
+
+    private static void MarkTopForProcess(List<TargetWindow> targets)
+    {
+        var keys = targets.ToDictionary(target => target, GetProcessKey);
+        var counts = keys.Values
+                         .GroupBy(key => key, StringComparer.OrdinalIgnoreCase)
+                         .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var target in targets)
+        {
+            target.IsTopForProcess = false;
+            var key = keys[target];
+            if (counts[key] > 1 && seen.Add(key))
+            {
+                target.IsTopForProcess = true;
+            }
+        }
+    }
+
+    private static string GetProcessKey(TargetWindow target)
+    {
+        return target.ProcessId > 0 ? $"pid:{target.ProcessId}" : $"name:{target.ProcessName}";
     }
 
     private static List<TargetWindow> GetTargets(string? process, string? title, Action<string>? onError)
@@ -218,9 +265,10 @@ public static class WindowCmd
             var foreground = Resizer.GetForegroundHandle();
             if (IsProcessAvailable(foreground, out string processName, null))
             {
-                targets.Add(new TargetWindow(foreground, processName, Resizer.GetWindowTitle(foreground)));
+                targets.Add(CreateTargetWindow(foreground, processName));
             }
 
+            MarkTopForProcess(targets);
             return targets;
         }
 
