@@ -11,7 +11,7 @@ namespace WindowResizer.CLI.Commands
 {
     internal class ResizeCommand : Command
     {
-        public ResizeCommand() : base("resize", "Resize window by process and window title.")
+        public ResizeCommand() : base("resize", "Resize window by process/title, or use -w/--window for direct placement without config.")
         {
             var configOption = new ConfigOption();
             AddOption(configOption);
