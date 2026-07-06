@@ -103,7 +103,7 @@ namespace WindowResizer.CLI.Commands
 
             var selectedIndex = 0;
             var offset = 0;
-            var startTop = EnsureSelectorStartTop();
+            var startTop = EnsureSelectorStartTop(targets.Count);
             var pageSize = GetSelectorPageSize(startTop);
             var originalForeground = Console.ForegroundColor;
             var originalBackground = Console.BackgroundColor;
@@ -167,16 +167,16 @@ namespace WindowResizer.CLI.Commands
             }
         }
 
-        private static int EnsureSelectorStartTop()
+        private static int EnsureSelectorStartTop(int targetCount)
         {
             var startTop = Console.CursorTop;
 
             try
             {
-                while (GetAvailableSelectorRows(startTop) < 6)
+                var desiredRows = GetDesiredSelectorRows(targetCount);
+                while (GetAvailableSelectorRows(startTop) < desiredRows)
                 {
                     Console.WriteLine();
-                    startTop = Console.CursorTop;
                 }
             }
             catch
@@ -188,16 +188,41 @@ namespace WindowResizer.CLI.Commands
             return startTop;
         }
 
-        private static int GetSelectorPageSize(int startTop)
+        private static int GetDesiredSelectorRows(int targetCount)
         {
             const int headerLines = 2;
             const int footerLines = 1;
+            const int reservedBottomLines = 1;
             const int minimumPageSize = 1;
             const int fallbackPageSize = 15;
 
             try
             {
-                var pageSize = GetAvailableSelectorRows(startTop) - headerLines - footerLines;
+                var windowRows = Math.Max(1, Console.WindowHeight);
+                var maxPageSize = Math.Max(minimumPageSize, windowRows - headerLines - footerLines - reservedBottomLines);
+                var desiredPageSize = Math.Max(minimumPageSize, Math.Min(Math.Max(1, targetCount), maxPageSize));
+                return Math.Min(windowRows, headerLines + footerLines + reservedBottomLines + desiredPageSize);
+            }
+            catch
+            {
+                return headerLines + footerLines + reservedBottomLines + Math.Min(Math.Max(1, targetCount), fallbackPageSize);
+            }
+        }
+
+        private static int GetSelectorPageSize(int startTop)
+        {
+            const int headerLines = 2;
+            const int footerLines = 1;
+            const int reservedBottomLines = 1;
+            const int minimumPageSize = 1;
+            const int fallbackPageSize = 15;
+
+            try
+            {
+                // Keep one unused row below the selector. If the footer is written on the
+                // last visible terminal row, Console.WriteLine() scrolls the window and the
+                // saved selector start row appears to jump or disappear.
+                var pageSize = GetAvailableSelectorRows(startTop) - headerLines - footerLines - reservedBottomLines;
                 return Math.Max(minimumPageSize, pageSize);
             }
             catch
