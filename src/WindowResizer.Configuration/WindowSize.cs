@@ -1,10 +1,12 @@
 using System;
+using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using Newtonsoft.Json;
 using WindowResizer.Common.Windows;
 
 namespace WindowResizer.Configuration;
 
-public class WindowSize : IComparable<WindowSize>
+public class WindowSize : IComparable<WindowSize>, INotifyPropertyChanged
 {
     public string Name { get; set; } = String.Empty;
 
@@ -16,10 +18,49 @@ public class WindowSize : IComparable<WindowSize>
 
     public Point MaximizedPosition { get; set; } = new(0, 0);
 
-    public bool AutoResize { get; set; }
+    private bool _autoResize;
+
+    public bool AutoResize
+    {
+        get => _autoResize;
+        set
+        {
+            if (_autoResize == value)
+            {
+                return;
+            }
+
+            _autoResize = value;
+            OnPropertyChanged();
+        }
+    }
+
+    private bool _fixed;
+
+    public bool Fixed
+    {
+        get => _fixed;
+        set
+        {
+            if (_fixed == value)
+            {
+                return;
+            }
+
+            _fixed = value;
+            OnPropertyChanged();
+        }
+    }
 
     // AutoResize Delay Milliseconds
     public int AutoResizeDelay { get; set; } = 0;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
 
     public int CompareTo(WindowSize? other)
     {

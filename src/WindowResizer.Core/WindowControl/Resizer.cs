@@ -80,6 +80,39 @@ public static class Resizer
         ShowWindow(hWnd, (int)ShowWindowCommands.ShowMaximized);
     }
 
+
+    public static void SetWindowResizable(IntPtr hWnd, bool resizable)
+    {
+        if (hWnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        const int GWL_STYLE = -16;
+        var style = GetWindowLongPtr(hWnd, GWL_STYLE).ToInt64();
+        var resizeStyle = (long)(WindowStyles.WS_THICKFRAME | WindowStyles.WS_MAXIMIZEBOX);
+        var newStyle = resizable ? style | resizeStyle : style & ~resizeStyle;
+
+        if (newStyle == style)
+        {
+            return;
+        }
+
+        SetWindowLongPtr(hWnd, GWL_STYLE, new IntPtr(newStyle));
+        SetWindowPos(
+            hWnd,
+            0,
+            0,
+            0,
+            0,
+            0,
+            (int)(SetWindowPosFlags.SWP_NOMOVE
+                  | SetWindowPosFlags.SWP_NOSIZE
+                  | SetWindowPosFlags.SWP_NOZORDER
+                  | SetWindowPosFlags.SWP_NOACTIVATE
+                  | SetWindowPosFlags.SWP_FRAMECHANGED));
+    }
+
     public static bool MoveWindow(IntPtr hWnd, Rect rect)
     {
         if (hWnd == IntPtr.Zero)

@@ -37,27 +37,53 @@ public static class WindowUtils
         // add delay to get window title on auto resizing
         if (config.EnableAutoResizeDelay && onlyAuto)
         {
-            var autoWindow = config.WindowSizes.FirstOrDefault(w => w.Name.Equals(processName, StringComparison.OrdinalIgnoreCase));
-            if (autoWindow is null)
-            {
-                return;
-            }
-
-            if (autoWindow.AutoResizeDelay > 0)
+            var autoWindow = config.WindowSizes.FirstOrDefault(w =>
+                w.Name.Equals(processName, StringComparison.OrdinalIgnoreCase) && w.AutoResize);
+            if (autoWindow?.AutoResizeDelay > 0)
             {
                 Thread.Sleep(autoWindow.AutoResizeDelay);
             }
         }
 
         var windowTitle = Resizer.GetWindowTitle(handle) ?? string.Empty;
-        var match = GetMatchWindowSize(config.WindowSizes, processName, windowTitle, config.EnableResizeByTitle, onlyAuto);
-        if (!match.NoMatch)
+        var match = GetMatchWindowSize(config.WindowSizes, processName, windowTitle, config.EnableResizeByTitle);
+        var bestMatch = match.BestMatch;
+
+        if (bestMatch is not null)
         {
-            MoveMatchWindow(match, handle);
+            if (!onlyAuto || bestMatch.AutoResize)
+            {
+                MoveWindow(handle, bestMatch);
+            }
+
+            ApplyFixedWindowStyle(handle, bestMatch);
+            return;
         }
-        else
+
+        if (!onlyAuto)
         {
             onConfigNoMatch?.Invoke(processName, windowTitle);
+        }
+    }
+
+    public static void ApplyFixedStateToOpenWindows(Config config, bool unlockResizableWindows = false)
+    {
+        foreach (var window in Resizer.GetOpenWindows())
+        {
+            if (!IsProcessAvailable(window, out string processName, null))
+            {
+                continue;
+            }
+
+            var windowTitle = Resizer.GetWindowTitle(window) ?? string.Empty;
+            var match = GetMatchWindowSize(config.WindowSizes, processName, windowTitle, config.EnableResizeByTitle);
+            var bestMatch = match.BestMatch;
+            if (bestMatch is null)
+            {
+                continue;
+            }
+
+            ApplyFixedWindowStyle(window, bestMatch, unlockResizableWindows);
         }
     }
 
@@ -132,29 +158,15 @@ public static class WindowUtils
 
     #region private functions
 
-    private static void MoveMatchWindow(MatchWindowSize match, IntPtr handle)
+    private static void ApplyFixedWindowStyle(IntPtr handle, WindowSize match, bool unlockResizableWindows = false)
     {
-        if (match.FullMatch != null)
+        if (match.Fixed)
         {
-            MoveWindow(handle, match.FullMatch);
-            return;
+            Resizer.SetWindowResizable(handle, false);
         }
-
-        if (match.PrefixMatch != null)
+        else if (unlockResizableWindows)
         {
-            MoveWindow(handle, match.PrefixMatch);
-            return;
-        }
-
-        if (match.SuffixMatch != null)
-        {
-            MoveWindow(handle, match.SuffixMatch);
-            return;
-        }
-
-        if (match.WildcardMatch != null)
-        {
-            MoveWindow(handle, match.WildcardMatch);
+            Resizer.SetWindowResizable(handle, true);
         }
     }
 

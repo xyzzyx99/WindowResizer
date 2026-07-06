@@ -212,13 +212,13 @@ namespace WindowResizer
 
         private void WindowsEventHandle()
         {
-            var autoSizeEnable = ConfigFactory.Current.WindowSizes.Any(i => i.AutoResize);
-            if (_windowEventHandler == null && autoSizeEnable)
+            var windowEventsEnable = ConfigFactory.Current.WindowSizes.Any(i => i.AutoResize || i.Fixed);
+            if (_windowEventHandler == null && windowEventsEnable)
             {
                 _windowEventHandler = new WindowEventHandler(OnWindowCreated);
                 _windowEventHandler.AddWindowCreateHandle();
             }
-            else if (_windowEventHandler != null && !autoSizeEnable)
+            else if (_windowEventHandler != null && !windowEventsEnable)
             {
                 _windowEventHandler?.Dispose();
                 _windowEventHandler = null;

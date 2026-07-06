@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
+using WindowResizer.Base;
 using WindowResizer.Configuration;
 using WindowResizer.Utils;
 
@@ -115,13 +116,27 @@ namespace WindowResizer
                 },
             });
 
+            ProcessesGrid.Columns.Add(new DataGridViewCheckBoxColumn
+            {
+                Name = "Fixed",
+                DataPropertyName = "Fixed",
+                HeaderText = "Fixed",
+                FillWeight = 8,
+                DisplayIndex = 7,
+                FlatStyle = FlatStyle.Standard,
+                DefaultCellStyle =
+                {
+                    SelectionBackColor = SystemColors.Window,
+                },
+            });
+
             ProcessesGrid.Columns.Add(new DataGridViewTextBoxColumn
             {
                 Name = "AutoResizeDelay",
                 DataPropertyName = "AutoResizeDelay",
                 HeaderText = "Delay",
                 FillWeight = 8,
-                DisplayIndex = 7,
+                DisplayIndex = 8,
                 ValueType = typeof(int),
                 DefaultCellStyle =
                 {
@@ -144,7 +159,7 @@ namespace WindowResizer
                     Padding = new Padding(5)
                 },
                 FillWeight = 10,
-                DisplayIndex = 8,
+                DisplayIndex = 9,
             });
 
             foreach (DataGridViewColumn col in ProcessesGrid.Columns)
@@ -159,6 +174,11 @@ namespace WindowResizer
                     col.ToolTipText = "Auto resize on/off";
                 }
 
+                if (col.Name.Equals("Fixed"))
+                {
+                    col.ToolTipText = "Prevent matched windows from being resized manually";
+                }
+
                 if (col.Name.Equals("AutoResizeDelay"))
                 {
                     col.ToolTipText = "Auto resizing delay in milliseconds, effective for process";
@@ -171,7 +191,8 @@ namespace WindowResizer
 
         private void ProcessesGrid_CellContentClick(object sender, DataGridViewCellEventArgs e)
         {
-            if (e.ColumnIndex == ProcessesGrid.Columns["AutoResize"]?.Index && e.RowIndex >= 0)
+            if ((e.ColumnIndex == ProcessesGrid.Columns["AutoResize"]?.Index ||
+                 e.ColumnIndex == ProcessesGrid.Columns["Fixed"]?.Index) && e.RowIndex >= 0)
             {
                 ProcessesGrid.CommitEdit(DataGridViewDataErrorContexts.Commit);
             }
@@ -181,6 +202,11 @@ namespace WindowResizer
 
         private void ProcessesGrid_CellValueChanged(object sender, DataGridViewCellEventArgs e)
         {
+            if (e.RowIndex < 0)
+            {
+                return;
+            }
+
             if (e.ColumnIndex == ProcessesGrid.Columns["AutoResizeDelay"]?.Index)
             {
                 DataGridViewCell cell = ProcessesGrid.Rows[e.RowIndex].Cells[e.ColumnIndex];
@@ -199,6 +225,11 @@ namespace WindowResizer
                         ws.AutoResizeDelay = val;
                     }
                 }
+            }
+
+            if (e.ColumnIndex == ProcessesGrid.Columns["Fixed"]?.Index)
+            {
+                ApplyFixedStateToOpenWindows(ConfigFactory.Current, true);
             }
 
             ConfigFactory.Save();
@@ -241,6 +272,7 @@ namespace WindowResizer
                     break;
 
                 case "AutoResize":
+                case "Fixed":
                 case "Remove":
                     ProcessesGrid.Cursor = Cursors.Hand;
                     break;
@@ -257,6 +289,12 @@ namespace WindowResizer
                 e.RowIndex >= 0 &&
                 e.RowIndex < ConfigFactory.Current.WindowSizes.Count)
             {
+                if (ProcessesGrid.Rows[e.RowIndex].DataBoundItem is WindowSize { Fixed: true } windowSize)
+                {
+                    windowSize.Fixed = false;
+                    ApplyFixedStateToOpenWindows(ConfigFactory.Current, true);
+                }
+
                 ConfigFactory.Current.WindowSizes.RemoveAt(e.RowIndex);
                 ConfigFactory.Save();
             }
