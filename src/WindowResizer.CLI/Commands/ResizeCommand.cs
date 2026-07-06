@@ -235,21 +235,14 @@ namespace WindowResizer.CLI.Commands
         {
             var title = string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title;
             var used = 0;
-            var processText = target.ProcessId > 0
-                ? $"{target.ProcessName} {target.ProcessId}"
-                : target.ProcessName;
-            if (target.IsTopForProcess)
-            {
-                processText += " Top";
-            }
-
             var processForeground = selected ? originalForeground : ConsoleColor.Green;
             var mutedForeground = selected ? originalForeground : ConsoleColor.DarkGray;
             var titleForeground = originalForeground;
-
             Console.BackgroundColor = background;
             used += WriteSelectorSegment(selected ? "> " : "  ", width - used, titleForeground, background);
-            used += WriteSelectorSegment(processText, width - used, processForeground, background);
+            used += WriteSelectorSegment(target.ProcessName, width - used, processForeground, background);
+            used += WriteProcessInfo(target, width - used, selected, processForeground, mutedForeground, background);
+
             used += WriteSelectorSegment(" | ", width - used, mutedForeground, background);
             used += WriteSelectorSegment(title, width - used, titleForeground, background);
             used += WriteSelectorSegment($" (0x{target.Handle.ToInt64():X})", width - used, mutedForeground, background);
@@ -262,6 +255,38 @@ namespace WindowResizer.CLI.Commands
             }
 
             Console.WriteLine();
+        }
+
+        private static int WriteProcessInfo(WindowCmd.TargetWindow target, int availableWidth, bool selected,
+            ConsoleColor topForeground, ConsoleColor mutedForeground, ConsoleColor background)
+        {
+            if (availableWidth <= 0 || (target.ProcessId <= 0 && !target.IsTopForProcess))
+            {
+                return 0;
+            }
+
+            var used = 0;
+            var pidForeground = selected ? topForeground : mutedForeground;
+
+            used += WriteSelectorSegment(" [", availableWidth - used, mutedForeground, background);
+
+            if (target.ProcessId > 0)
+            {
+                used += WriteSelectorSegment(target.ProcessId.ToString(), availableWidth - used, pidForeground, background);
+
+                if (target.IsTopForProcess)
+                {
+                    used += WriteSelectorSegment(" ", availableWidth - used, mutedForeground, background);
+                }
+            }
+
+            if (target.IsTopForProcess)
+            {
+                used += WriteSelectorSegment("Top", availableWidth - used, topForeground, background);
+            }
+
+            used += WriteSelectorSegment("]", availableWidth - used, mutedForeground, background);
+            return used;
         }
 
         private static int WriteSelectorSegment(string text, int availableWidth,

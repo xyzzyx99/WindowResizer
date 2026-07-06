@@ -235,26 +235,12 @@ public static class WindowCmd
 
     private static void MarkTopForProcess(List<TargetWindow> targets)
     {
-        var keys = targets.ToDictionary(target => target, GetProcessKey);
-        var counts = keys.Values
-                         .GroupBy(key => key, StringComparer.OrdinalIgnoreCase)
-                         .ToDictionary(group => group.Key, group => group.Count(), StringComparer.OrdinalIgnoreCase);
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenProcessNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var target in targets)
         {
-            target.IsTopForProcess = false;
-            var key = keys[target];
-            if (counts[key] > 1 && seen.Add(key))
-            {
-                target.IsTopForProcess = true;
-            }
+            target.IsTopForProcess = seenProcessNames.Add(target.ProcessName);
         }
-    }
-
-    private static string GetProcessKey(TargetWindow target)
-    {
-        return target.ProcessId > 0 ? $"pid:{target.ProcessId}" : $"name:{target.ProcessName}";
     }
 
     private static List<TargetWindow> GetTargets(string? process, string? title, Action<string>? onError)
