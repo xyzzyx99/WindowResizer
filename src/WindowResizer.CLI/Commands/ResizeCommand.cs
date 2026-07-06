@@ -216,47 +216,63 @@ namespace WindowResizer.CLI.Commands
         {
             key = default(ConsoleKeyInfo);
 
-            // Prefer the .NET keyboard reader for key events. It handles
-            // extended keys, repeats, and translated characters more reliably
-            // than manually converting KEY_EVENT_RECORD values. Raw console
-            // input is still used below for mouse events and as a keyboard
-            // fallback when Console.KeyAvailable does not see the event.
-            if (TryReadLegacyKeyboardInput(out key))
-            {
-                return true;
-            }
-
             var inputHandle = GetStdHandle(StdInputHandle);
             if (inputHandle == IntPtr.Zero || inputHandle == new IntPtr(-1))
             {
-                return false;
+                return TryReadLegacyKeyboardInput(out key);
             }
 
             uint eventCount;
             if (!GetNumberOfConsoleInputEvents(inputHandle, out eventCount))
             {
-                return false;
+                return TryReadLegacyKeyboardInput(out key);
             }
 
             while (eventCount > 0)
             {
-                INPUT_RECORD record;
-                uint recordsRead;
-                if (!ReadConsoleInput(inputHandle, out record, 1, out recordsRead) || recordsRead == 0)
+                INPUT_RECORD peekedRecord;
+                uint recordsPeeked;
+                if (!PeekConsoleInput(inputHandle, out peekedRecord, 1, out recordsPeeked) || recordsPeeked == 0)
+                {
+                    return TryReadLegacyKeyboardInput(out key);
+                }
+
+                if (peekedRecord.EventType == KeyEvent)
+                {
+                    if (!peekedRecord.Event.KeyEvent.bKeyDown)
+                    {
+                        if (!ReadAndDiscardConsoleInput(inputHandle))
+                        {
+                            return false;
+                        }
+                    }
+                    else if (TryReadLegacyKeyboardInput(out key))
+                    {
+                        return true;
+                    }
+                    else if (TryReadRawConsoleKey(inputHandle, out key))
+                    {
+                        return true;
+                    }
+                }
+                else if (peekedRecord.EventType == MouseEvent)
+                {
+                    INPUT_RECORD record;
+                    uint recordsRead;
+                    if (!ReadConsoleInput(inputHandle, out record, 1, out recordsRead) || recordsRead == 0)
+                    {
+                        return false;
+                    }
+
+                    if (TryHandleSelectorMouseEvent(record.Event.MouseEvent,
+                            targets, ref selectedIndex, offset, pageSize, startTop, out key))
+                    {
+                        return true;
+                    }
+                }
+                else if (!ReadAndDiscardConsoleInput(inputHandle))
                 {
                     return false;
-                }
-
-                if (record.EventType == KeyEvent && record.Event.KeyEvent.bKeyDown)
-                {
-                    key = CreateConsoleKeyInfo(record.Event.KeyEvent);
-                    return true;
-                }
-
-                if (record.EventType == MouseEvent && TryHandleSelectorMouseEvent(record.Event.MouseEvent,
-                        targets, ref selectedIndex, offset, pageSize, startTop, out key))
-                {
-                    return true;
                 }
 
                 if (!GetNumberOfConsoleInputEvents(inputHandle, out eventCount))
@@ -266,6 +282,33 @@ namespace WindowResizer.CLI.Commands
             }
 
             return false;
+        }
+
+        private static bool ReadAndDiscardConsoleInput(IntPtr inputHandle)
+        {
+            INPUT_RECORD ignored;
+            uint recordsRead;
+            return ReadConsoleInput(inputHandle, out ignored, 1, out recordsRead) && recordsRead > 0;
+        }
+
+        private static bool TryReadRawConsoleKey(IntPtr inputHandle, out ConsoleKeyInfo key)
+        {
+            key = default(ConsoleKeyInfo);
+
+            INPUT_RECORD record;
+            uint recordsRead;
+            if (!ReadConsoleInput(inputHandle, out record, 1, out recordsRead) || recordsRead == 0)
+            {
+                return false;
+            }
+
+            if (record.EventType != KeyEvent || !record.Event.KeyEvent.bKeyDown)
+            {
+                return false;
+            }
+
+            key = CreateConsoleKeyInfo(record.Event.KeyEvent);
+            return true;
         }
 
         private static bool TryReadLegacyKeyboardInput(out ConsoleKeyInfo key)
@@ -969,6 +1012,9 @@ namespace WindowResizer.CLI.Commands
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool ReadConsoleInput(IntPtr hConsoleInput, out INPUT_RECORD lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool PeekConsoleInput(IntPtr hConsoleInput, out INPUT_RECORD lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct INPUT_RECORD
