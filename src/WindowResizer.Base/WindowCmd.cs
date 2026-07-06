@@ -195,6 +195,7 @@ public static class WindowCmd
         }
 
         MarkTopForProcess(targets);
+        SortSelectableTargets(targets);
         return targets;
     }
 
@@ -241,6 +242,26 @@ public static class WindowCmd
         {
             target.IsTopForProcess = seenProcessNames.Add(target.ProcessName);
         }
+    }
+
+    private static void SortSelectableTargets(List<TargetWindow> targets)
+    {
+        var orderedTargets = targets
+            .Select((target, index) => new { Target = target, OriginalIndex = index })
+            .OrderBy(i => i.Target.ProcessName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(i => i.Target.IsTopForProcess ? 0 : 1)
+            .ThenBy(i => i.Target.IsTopForProcess ? 0 : GetSortableProcessId(i.Target))
+            .ThenBy(i => i.OriginalIndex)
+            .Select(i => i.Target)
+            .ToList();
+
+        targets.Clear();
+        targets.AddRange(orderedTargets);
+    }
+
+    private static int GetSortableProcessId(TargetWindow target)
+    {
+        return target.ProcessId <= 0 ? int.MaxValue : target.ProcessId;
     }
 
     private static List<TargetWindow> GetTargets(string? process, string? title, Action<string>? onError)
