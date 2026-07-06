@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -26,17 +27,14 @@ public static class WindowCmd
         windows.Reverse();
 
         var targets = new List<TargetWindow>();
+        var processCache = new Dictionary<int, CachedProcessInfo>();
 
         foreach (var handler in windows)
         {
-            if (!IsProcessAvailable(handler, out string processName, null))
+            if (TryCreateSelectableTargetWindow(handler, processCache, out var target))
             {
-                continue;
+                targets.Add(target!);
             }
-
-            var t = Resizer.GetWindowTitle(handler);
-
-            targets.Add(CreateTargetWindow(handler, processName));
         }
 
         bool resizeAllProcesses = string.IsNullOrEmpty(process);
@@ -203,15 +201,14 @@ public static class WindowCmd
     {
         var windows = Resizer.GetOpenWindows();
         var targets = new List<TargetWindow>();
+        var processCache = new Dictionary<int, CachedProcessInfo>();
 
         foreach (var handler in windows)
         {
-            if (!IsProcessAvailable(handler, out string processName, null))
+            if (TryCreateSelectableTargetWindow(handler, processCache, out var target))
             {
-                continue;
+                targets.Add(target!);
             }
-
-            targets.Add(CreateTargetWindow(handler, processName));
         }
 
         return targets;
@@ -220,6 +217,115 @@ public static class WindowCmd
     private static TargetWindow CreateTargetWindow(IntPtr handle, string processName)
     {
         return new TargetWindow(handle, processName, Resizer.GetWindowTitle(handle), GetProcessId(handle));
+    }
+
+    private static bool TryCreateSelectableTargetWindow(IntPtr handle, Dictionary<int, CachedProcessInfo> processCache, out TargetWindow? target)
+    {
+        target = null;
+
+        if (Resizer.IsChildWindow(handle))
+        {
+            return false;
+        }
+
+        int topLevelProcessId;
+        try
+        {
+            topLevelProcessId = Resizer.GetWindowProcessId(handle);
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        if (topLevelProcessId <= 0)
+        {
+            return false;
+        }
+
+        if (processCache.TryGetValue(topLevelProcessId, out var cachedInfo))
+        {
+            if (!cachedInfo.Available)
+            {
+                return false;
+            }
+
+            target = new TargetWindow(handle, cachedInfo.ProcessName, Resizer.GetWindowTitle(handle), cachedInfo.ProcessId);
+            return true;
+        }
+
+        var shouldCache = true;
+        try
+        {
+            Process? process = Process.GetProcessById(topLevelProcessId);
+            if (process is null)
+            {
+                if (shouldCache)
+                {
+                    processCache[topLevelProcessId] = CachedProcessInfo.Unavailable;
+                }
+
+                return false;
+            }
+
+            if (process.ProcessName.Equals("ApplicationFrameHost", StringComparison.OrdinalIgnoreCase))
+            {
+                process = Resizer.GetRealProcess(handle);
+                shouldCache = false;
+            }
+
+            if (process is null)
+            {
+                if (shouldCache)
+                {
+                    processCache[topLevelProcessId] = CachedProcessInfo.Unavailable;
+                }
+
+                return false;
+            }
+
+            if (!TryGetProcessModuleName(process, out var processName) || Resizer.IsInvisibleProcess(processName))
+            {
+                if (shouldCache)
+                {
+                    processCache[topLevelProcessId] = CachedProcessInfo.Unavailable;
+                }
+
+                return false;
+            }
+
+            var processInfo = new CachedProcessInfo(true, process.Id, processName);
+            if (shouldCache)
+            {
+                processCache[topLevelProcessId] = processInfo;
+            }
+
+            target = new TargetWindow(handle, processInfo.ProcessName, Resizer.GetWindowTitle(handle), processInfo.ProcessId);
+            return true;
+        }
+        catch (Exception)
+        {
+            if (shouldCache)
+            {
+                processCache[topLevelProcessId] = CachedProcessInfo.Unavailable;
+            }
+
+            return false;
+        }
+    }
+
+    private static bool TryGetProcessModuleName(Process process, out string processName)
+    {
+        try
+        {
+            processName = process.MainModule?.ModuleName ?? string.Empty;
+            return !string.IsNullOrWhiteSpace(processName);
+        }
+        catch (Exception)
+        {
+            processName = string.Empty;
+            return false;
+        }
     }
 
     private static int GetProcessId(IntPtr handle)
@@ -232,6 +338,24 @@ public static class WindowCmd
         {
             return 0;
         }
+    }
+
+    private class CachedProcessInfo
+    {
+        public CachedProcessInfo(bool available, int processId, string processName)
+        {
+            Available = available;
+            ProcessId = processId;
+            ProcessName = processName;
+        }
+
+        public static CachedProcessInfo Unavailable { get; } = new CachedProcessInfo(false, 0, string.Empty);
+
+        public bool Available { get; }
+
+        public int ProcessId { get; }
+
+        public string ProcessName { get; }
     }
 
     private static void MarkTopForProcess(List<TargetWindow> targets)
@@ -270,9 +394,10 @@ public static class WindowCmd
         if (string.IsNullOrWhiteSpace(process))
         {
             var foreground = Resizer.GetForegroundHandle();
-            if (IsProcessAvailable(foreground, out string processName, null))
+            var processCache = new Dictionary<int, CachedProcessInfo>();
+            if (TryCreateSelectableTargetWindow(foreground, processCache, out var target))
             {
-                targets.Add(CreateTargetWindow(foreground, processName));
+                targets.Add(target!);
             }
 
             MarkTopForProcess(targets);

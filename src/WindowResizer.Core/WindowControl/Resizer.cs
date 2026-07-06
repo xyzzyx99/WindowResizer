@@ -187,10 +187,16 @@ public static class Resizer
         }
     }
 
-    public static Process? GetRealProcess(IntPtr hWnd)
+    public static int GetWindowProcessId(IntPtr hWnd)
     {
         _ = GetWindowThreadProcessId(hWnd, out var pid);
-        var foregroundProcess = Process.GetProcessById((int)pid);
+        return (int)pid;
+    }
+
+    public static Process? GetRealProcess(IntPtr hWnd)
+    {
+        var pid = GetWindowProcessId(hWnd);
+        var foregroundProcess = Process.GetProcessById(pid);
         if (foregroundProcess.ProcessName == "ApplicationFrameHost")
         {
             foregroundProcess = GetRealProcess(foregroundProcess);
