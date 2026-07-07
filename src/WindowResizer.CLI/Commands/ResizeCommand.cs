@@ -16,6 +16,9 @@ namespace WindowResizer.CLI.Commands
 {
     internal class ResizeCommand : Command
     {
+        private const int SelectorResizePollMilliseconds = 50;
+        private const int SelectorWidthResizeDebounceMilliseconds = 160;
+
         public ResizeCommand() : base("resize", "Resize window by process/title, use -w/--window for direct placement, or -i/--interactive to choose a window.")
         {
             var configOption = new ConfigOption();
@@ -187,6 +190,11 @@ namespace WindowResizer.CLI.Commands
             ConsoleColor originalForeground, ConsoleColor originalBackground, bool usingAlternateScreen,
             SelectorRenderState renderState, ref int lastConsoleWidth, ref int lastConsoleHeight)
         {
+            var pendingWidthResize = false;
+            var pendingWidth = lastConsoleWidth;
+            var pendingHeight = lastConsoleHeight;
+            var lastWidthResizeTick = Environment.TickCount;
+
             while (true)
             {
                 // Windows Terminal may briefly re-enable or show the text cursor
@@ -200,8 +208,35 @@ namespace WindowResizer.CLI.Commands
                     return key;
                 }
 
-                if (HasConsoleSizeChanged(ref lastConsoleWidth, ref lastConsoleHeight))
+                if (TryGetConsoleSizeChange(lastConsoleWidth, lastConsoleHeight, out var currentWidth, out var currentHeight))
                 {
+                    var widthChanged = currentWidth != lastConsoleWidth;
+
+                    // Width changes require recomputing and rewriting every row because truncation
+                    // and padding change. During live mouse-drag resizing, Windows Terminal can
+                    // report many intermediate widths very quickly, which produces ghosting. Wait
+                    // until the width has been stable briefly, then repaint once. Height-only
+                    // changes remain immediate so rows appear/disappear without lag.
+                    if (widthChanged)
+                    {
+                        if (!pendingWidthResize || currentWidth != pendingWidth || currentHeight != pendingHeight)
+                        {
+                            pendingWidthResize = true;
+                            pendingWidth = currentWidth;
+                            pendingHeight = currentHeight;
+                            lastWidthResizeTick = Environment.TickCount;
+                        }
+
+                        if (unchecked(Environment.TickCount - lastWidthResizeTick) < SelectorWidthResizeDebounceMilliseconds)
+                        {
+                            Thread.Sleep(SelectorResizePollMilliseconds);
+                            continue;
+                        }
+                    }
+
+                    pendingWidthResize = false;
+                    lastConsoleWidth = currentWidth;
+                    lastConsoleHeight = currentHeight;
                     HideSelectorCursor(usingAlternateScreen);
                     pageSize = GetSelectorPageSize();
                     RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
@@ -209,7 +244,7 @@ namespace WindowResizer.CLI.Commands
                 }
 
                 HideSelectorCursor(usingAlternateScreen);
-                Thread.Sleep(50);
+                Thread.Sleep(SelectorResizePollMilliseconds);
             }
         }
 
@@ -431,19 +466,12 @@ namespace WindowResizer.CLI.Commands
             return '\0';
         }
 
-        private static bool HasConsoleSizeChanged(ref int lastWidth, ref int lastHeight)
+        private static bool TryGetConsoleSizeChange(int lastWidth, int lastHeight, out int currentWidth, out int currentHeight)
         {
-            var currentWidth = GetSafeConsoleWidth();
-            var currentHeight = GetSafeConsoleHeight();
+            currentWidth = GetSafeConsoleWidth();
+            currentHeight = GetSafeConsoleHeight();
 
-            if (currentWidth == lastWidth && currentHeight == lastHeight)
-            {
-                return false;
-            }
-
-            lastWidth = currentWidth;
-            lastHeight = currentHeight;
-            return true;
+            return currentWidth != lastWidth || currentHeight != lastHeight;
         }
 
         private static int GetSafeConsoleWidth()
