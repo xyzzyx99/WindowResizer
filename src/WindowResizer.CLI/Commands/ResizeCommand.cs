@@ -953,6 +953,29 @@ namespace WindowResizer.CLI.Commands
             }
         }
 
+        private static void RenderTargetWindowSelectorFull(List<WindowCmd.TargetWindow> targets, int selectedIndex, int offset,
+            int pageSize, int startTop, int width, int visibleCount, ConsoleColor highlightBackground,
+            ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors)
+        {
+            var row = startTop;
+            SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
+            WriteSelectorLine(row++, "Select a window/application:", width, useAnsiColors);
+            SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
+            WriteSelectorLine(row++, "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc.", width, useAnsiColors);
+
+            for (var i = 0; i < pageSize; i++)
+            {
+                RedrawSelectorListRow(targets, offset + i, selectedIndex, row++, width,
+                    highlightBackground, originalForeground, originalBackground, useAnsiColors);
+            }
+
+            SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
+            var footer = targets.Count > visibleCount
+                ? $"Showing {offset + 1}-{offset + visibleCount} of {targets.Count}."
+                : $"Showing {targets.Count} window(s).";
+            WriteSelectorLine(row, footer, width, useAnsiColors);
+        }
+
         private static void RenderTargetWindowSelectorWithConsoleWrites(List<WindowCmd.TargetWindow> targets, int selectedIndex,
             int offset, int pageSize, int startTop, int width, int visibleCount, ConsoleColor highlightBackground,
             ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors, SelectorRenderState renderState)
