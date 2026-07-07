@@ -17,7 +17,7 @@ namespace WindowResizer.CLI.Commands
     internal class ResizeCommand : Command
     {
         private const int SelectorResizePollMilliseconds = 50;
-        private const int SelectorWidthResizeDebounceMilliseconds = 160;
+        private const int SelectorResizeDebounceMilliseconds = 250;
 
         public ResizeCommand() : base("resize", "Resize window by process/title, use -w/--window for direct placement, or -i/--interactive to choose a window.")
         {
@@ -190,10 +190,10 @@ namespace WindowResizer.CLI.Commands
             ConsoleColor originalForeground, ConsoleColor originalBackground, bool usingAlternateScreen,
             SelectorRenderState renderState, ref int lastConsoleWidth, ref int lastConsoleHeight)
         {
-            var pendingWidthResize = false;
+            var pendingResize = false;
             var pendingWidth = lastConsoleWidth;
             var pendingHeight = lastConsoleHeight;
-            var lastWidthResizeTick = Environment.TickCount;
+            var lastResizeTick = Environment.TickCount;
 
             while (true)
             {
@@ -210,31 +210,26 @@ namespace WindowResizer.CLI.Commands
 
                 if (TryGetConsoleSizeChange(lastConsoleWidth, lastConsoleHeight, out var currentWidth, out var currentHeight))
                 {
-                    var widthChanged = currentWidth != lastConsoleWidth;
-
-                    // Width changes require recomputing and rewriting every row because truncation
-                    // and padding change. During live mouse-drag resizing, Windows Terminal can
-                    // report many intermediate widths very quickly, which produces ghosting. Wait
-                    // until the width has been stable briefly, then repaint once. Height-only
-                    // changes remain immediate so rows appear/disappear without lag.
-                    if (widthChanged)
+                    // A console program cannot reliably know when the user releases the mouse
+                    // button after dragging the terminal border, or when keyboard-based terminal
+                    // resizing has ended. Treat resize as finished only after the reported terminal
+                    // size has stayed unchanged for a short interval, then repaint once. This avoids
+                    // repeatedly drawing intermediate frames that can leave ghost images.
+                    if (!pendingResize || currentWidth != pendingWidth || currentHeight != pendingHeight)
                     {
-                        if (!pendingWidthResize || currentWidth != pendingWidth || currentHeight != pendingHeight)
-                        {
-                            pendingWidthResize = true;
-                            pendingWidth = currentWidth;
-                            pendingHeight = currentHeight;
-                            lastWidthResizeTick = Environment.TickCount;
-                        }
-
-                        if (unchecked(Environment.TickCount - lastWidthResizeTick) < SelectorWidthResizeDebounceMilliseconds)
-                        {
-                            Thread.Sleep(SelectorResizePollMilliseconds);
-                            continue;
-                        }
+                        pendingResize = true;
+                        pendingWidth = currentWidth;
+                        pendingHeight = currentHeight;
+                        lastResizeTick = Environment.TickCount;
                     }
 
-                    pendingWidthResize = false;
+                    if (unchecked(Environment.TickCount - lastResizeTick) < SelectorResizeDebounceMilliseconds)
+                    {
+                        Thread.Sleep(SelectorResizePollMilliseconds);
+                        continue;
+                    }
+
+                    pendingResize = false;
                     lastConsoleWidth = currentWidth;
                     lastConsoleHeight = currentHeight;
                     HideSelectorCursor(usingAlternateScreen);
