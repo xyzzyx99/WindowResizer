@@ -203,9 +203,7 @@ namespace WindowResizer.CLI.Commands
                 if (HasConsoleSizeChanged(ref lastConsoleWidth, ref lastConsoleHeight))
                 {
                     HideSelectorCursor(usingAlternateScreen);
-                    TryClearSelectorScreen();
                     pageSize = GetSelectorPageSize();
-                    renderState.Invalidate();
                     RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
                         highlightBackground, originalForeground, originalBackground, usingAlternateScreen, renderState);
                 }
@@ -757,6 +755,45 @@ namespace WindowResizer.CLI.Commands
         {
             HideSelectorCursor(useAnsiColors);
 
+            AdjustSelectorViewport(targets.Count, selectedIndex, pageSize, ref offset);
+
+            var width = GetSafeSelectorWidth();
+            var visibleCount = Math.Min(pageSize, Math.Max(0, targets.Count - offset));
+            var rows = BuildSelectorRows(targets, selectedIndex, offset, pageSize, width, visibleCount,
+                highlightBackground, originalForeground, originalBackground);
+
+            if (!TryRenderSelectorRows(rows, startTop, width, renderState))
+            {
+                RenderTargetWindowSelectorWithConsoleWrites(targets, selectedIndex, offset, pageSize, startTop,
+                    width, visibleCount, highlightBackground, originalForeground, originalBackground, useAnsiColors, renderState);
+            }
+            else
+            {
+                renderState.Update(selectedIndex, offset, pageSize, width, targets.Count, rows);
+            }
+
+            // Leave the cursor in a harmless position and hide it again after
+            // every paint. Resizing the terminal can temporarily reveal the
+            // cursor at the last write position otherwise.
+            TrySetSelectorCursorPosition(0, 0);
+            HideSelectorCursor(useAnsiColors);
+        }
+
+        private static void AdjustSelectorViewport(int targetCount, int selectedIndex, int pageSize, ref int offset)
+        {
+            if (targetCount <= 0)
+            {
+                offset = 0;
+                return;
+            }
+
+            pageSize = Math.Max(1, pageSize);
+
+            // Keep the full target list in memory and only remap the visible
+            // slice. For pure height changes this keeps the same top row first,
+            // adds/removes rows at the bottom, and only shifts the slice when the
+            // selected item would leave the visible page or when we are already
+            // at the end and need to keep a full page.
             if (selectedIndex < offset)
             {
                 offset = selectedIndex;
@@ -766,10 +803,160 @@ namespace WindowResizer.CLI.Commands
                 offset = selectedIndex - pageSize + 1;
             }
 
-            offset = Math.Max(0, Math.Min(offset, Math.Max(0, targets.Count - pageSize)));
+            var maxOffset = Math.Max(0, targetCount - pageSize);
+            offset = Math.Max(0, Math.Min(offset, maxOffset));
+        }
 
-            var width = GetSafeSelectorWidth();
-            var visibleCount = Math.Min(pageSize, Math.Max(0, targets.Count - offset));
+        private static List<SelectorRowBuffer> BuildSelectorRows(List<WindowCmd.TargetWindow> targets, int selectedIndex,
+            int offset, int pageSize, int width, int visibleCount, ConsoleColor highlightBackground,
+            ConsoleColor originalForeground, ConsoleColor originalBackground)
+        {
+            var rows = new List<SelectorRowBuffer>(SelectorHeaderLines + pageSize + SelectorFooterLines);
+            rows.Add(BuildSelectorTextRow("Select a window/application:", width, originalForeground, originalBackground));
+            rows.Add(BuildSelectorTextRow("Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc.",
+                width, originalForeground, originalBackground));
+
+            for (var i = 0; i < pageSize; i++)
+            {
+                rows.Add(BuildSelectorListRow(targets, offset + i, selectedIndex, width,
+                    highlightBackground, originalForeground, originalBackground));
+            }
+
+            var footer = targets.Count > visibleCount
+                ? $"Showing {offset + 1}-{offset + visibleCount} of {targets.Count}."
+                : $"Showing {targets.Count} window(s).";
+            rows.Add(BuildSelectorTextRow(footer, width, originalForeground, originalBackground));
+            return rows;
+        }
+
+        private static SelectorRowBuffer BuildSelectorTextRow(string text, int width,
+            ConsoleColor foreground, ConsoleColor background)
+        {
+            var builder = new SelectorRowBuilder(width, foreground, background);
+            builder.Append(text, foreground, background);
+            return builder.ToRowBuffer();
+        }
+
+        private static SelectorRowBuffer BuildSelectorListRow(List<WindowCmd.TargetWindow> targets, int targetIndex,
+            int selectedIndex, int width, ConsoleColor highlightBackground,
+            ConsoleColor originalForeground, ConsoleColor originalBackground)
+        {
+            var selected = targetIndex == selectedIndex;
+            var rowBackground = selected ? highlightBackground : originalBackground;
+            var builder = new SelectorRowBuilder(width, originalForeground, rowBackground);
+
+            if (targetIndex >= targets.Count)
+            {
+                return builder.ToRowBuffer();
+            }
+
+            AppendTargetWindowSelectorLine(builder, targets[targetIndex], selected, originalForeground, rowBackground);
+            return builder.ToRowBuffer();
+        }
+
+        private static void AppendTargetWindowSelectorLine(SelectorRowBuilder builder, WindowCmd.TargetWindow target,
+            bool selected, ConsoleColor originalForeground, ConsoleColor background)
+        {
+            var title = string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title;
+            var processForeground = selected ? originalForeground : ConsoleColor.Green;
+            var mutedForeground = selected ? originalForeground : ConsoleColor.DarkGray;
+            var titleForeground = originalForeground;
+
+            builder.Append(selected ? "> " : "  ", titleForeground, background);
+            builder.Append(target.ProcessName, processForeground, background);
+            AppendProcessInfo(builder, target, selected, processForeground, mutedForeground, background);
+            builder.Append(" | ", mutedForeground, background);
+            builder.Append(title, titleForeground, background);
+            builder.Append($" (0x{target.Handle.ToInt64():X})", mutedForeground, background);
+        }
+
+        private static void AppendProcessInfo(SelectorRowBuilder builder, WindowCmd.TargetWindow target, bool selected,
+            ConsoleColor topForeground, ConsoleColor mutedForeground, ConsoleColor background)
+        {
+            if (builder.Remaining <= 0 || (target.ProcessId <= 0 && !target.IsTopForProcess))
+            {
+                return;
+            }
+
+            var pidForeground = selected ? topForeground : mutedForeground;
+            builder.Append(" [", mutedForeground, background);
+
+            if (target.ProcessId > 0)
+            {
+                builder.Append(target.ProcessId.ToString(), pidForeground, background);
+
+                if (target.IsTopForProcess)
+                {
+                    builder.Append(" ", mutedForeground, background);
+                }
+            }
+
+            if (target.IsTopForProcess)
+            {
+                builder.Append("Top", topForeground, background);
+            }
+
+            builder.Append("]", mutedForeground, background);
+        }
+
+        private static bool TryRenderSelectorRows(List<SelectorRowBuffer> rows, int startTop, int width,
+            SelectorRenderState renderState)
+        {
+            var outputHandle = GetStdHandle(StdOutputHandle);
+            if (outputHandle == IntPtr.Zero || outputHandle == new IntPtr(-1) || width <= 0)
+            {
+                return false;
+            }
+
+            var oldRows = renderState.LastRows;
+            for (var i = 0; i < rows.Count; i++)
+            {
+                var oldRow = oldRows != null && i < oldRows.Count ? oldRows[i] : null;
+                if (!renderState.IsInvalid && rows[i].EqualsCells(oldRow))
+                {
+                    continue;
+                }
+
+                if (!TryWriteSelectorRowBuffer(outputHandle, rows[i], startTop + i, width))
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private static bool TryWriteSelectorRowBuffer(IntPtr outputHandle, SelectorRowBuffer row, int top, int width)
+        {
+            if (top < 0 || width <= 0 || row == null || row.Cells.Length != width)
+            {
+                return false;
+            }
+
+            try
+            {
+                var bufferSize = new COORD { X = (short)width, Y = 1 };
+                var bufferCoord = new COORD { X = 0, Y = 0 };
+                var writeRegion = new SMALL_RECT
+                {
+                    Left = 0,
+                    Top = (short)top,
+                    Right = (short)(width - 1),
+                    Bottom = (short)top
+                };
+
+                return WriteConsoleOutput(outputHandle, row.Cells, bufferSize, bufferCoord, ref writeRegion);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void RenderTargetWindowSelectorWithConsoleWrites(List<WindowCmd.TargetWindow> targets, int selectedIndex,
+            int offset, int pageSize, int startTop, int width, int visibleCount, ConsoleColor highlightBackground,
+            ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors, SelectorRenderState renderState)
+        {
             var fullRedraw = renderState.IsInvalid
                              || renderState.LastOffset != offset
                              || renderState.LastPageSize != pageSize
@@ -789,73 +976,115 @@ namespace WindowResizer.CLI.Commands
                     width, highlightBackground, originalForeground, originalBackground, useAnsiColors);
             }
 
-            renderState.Update(selectedIndex, offset, pageSize, width, targets.Count);
-
-            // Leave the cursor in a harmless position and hide it again after
-            // every paint. Resizing the terminal can temporarily reveal the
-            // cursor at the last write position otherwise.
-            TrySetSelectorCursorPosition(0, 0);
-            HideSelectorCursor(useAnsiColors);
+            renderState.Update(selectedIndex, offset, pageSize, width, targets.Count, null);
         }
 
-        private static void RenderTargetWindowSelectorFull(List<WindowCmd.TargetWindow> targets, int selectedIndex, int offset,
-            int pageSize, int startTop, int width, int visibleCount, ConsoleColor highlightBackground,
-            ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors)
+        private sealed class SelectorRowBuilder
         {
-            var row = startTop;
-            SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
-            WriteSelectorLine(row++, "Select a window/application:", width, useAnsiColors);
-            SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
-            WriteSelectorLine(row++, "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc.", width, useAnsiColors);
+            private readonly int width;
+            private readonly CHAR_INFO[] cells;
+            private int used;
 
-            for (var i = 0; i < pageSize; i++)
+            public SelectorRowBuilder(int width, ConsoleColor foreground, ConsoleColor background)
             {
-                RedrawSelectorListRow(targets, offset + i, selectedIndex, row++, width,
-                    highlightBackground, originalForeground, originalBackground, useAnsiColors);
+                this.width = Math.Max(1, width);
+                cells = new CHAR_INFO[this.width];
+                var attribute = GetSelectorAttribute(foreground, background);
+                for (var i = 0; i < cells.Length; i++)
+                {
+                    cells[i].UnicodeChar = ' ';
+                    cells[i].Attributes = attribute;
+                }
             }
 
-            SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
-            var footer = targets.Count > visibleCount
-                ? $"Showing {offset + 1}-{offset + visibleCount} of {targets.Count}."
-                : $"Showing {targets.Count} window(s).";
-            WriteSelectorLine(row, footer, width, useAnsiColors);
+            public int Remaining => width - used;
+
+            public int Append(string text, ConsoleColor foreground, ConsoleColor background)
+            {
+                if (Remaining <= 0 || string.IsNullOrEmpty(text))
+                {
+                    return 0;
+                }
+
+                text = TrimSelectorTextToWidth(text, Remaining);
+                var before = used;
+                var attribute = GetSelectorAttribute(foreground, background);
+                AppendTextCells(text, attribute);
+                return used - before;
+            }
+
+            public SelectorRowBuffer ToRowBuffer()
+            {
+                return new SelectorRowBuffer(cells);
+            }
+
+            private void AppendTextCells(string text, short attribute)
+            {
+                text = NormalizeSelectorText(text);
+
+                for (var i = 0; i < text.Length && used < width;)
+                {
+                    var charCount = GetSelectorCodePointLength(text, i);
+                    var charWidth = GetSelectorCodePointWidth(text, i);
+                    if (charWidth <= 0)
+                    {
+                        i += charCount;
+                        continue;
+                    }
+
+                    if (used + charWidth > width)
+                    {
+                        break;
+                    }
+
+                    var ch = charCount == 1 ? text[i] : '?';
+                    cells[used].UnicodeChar = ch;
+                    cells[used].Attributes = attribute;
+                    used++;
+
+                    // When a code point is measured as occupying two terminal
+                    // cells, reserve the second cell in the off-screen row. This
+                    // keeps all later columns aligned and prevents the row from
+                    // crossing the terminal edge when copied to the console
+                    // buffer.
+                    if (charWidth > 1 && used < width)
+                    {
+                        cells[used].UnicodeChar = ' ';
+                        cells[used].Attributes = attribute;
+                        used++;
+                    }
+
+                    i += charCount;
+                }
+            }
         }
 
-        private static void RedrawSelectorRowIfVisible(List<WindowCmd.TargetWindow> targets, int targetIndex, int selectedIndex,
-            int offset, int pageSize, int startTop, int width, ConsoleColor highlightBackground,
-            ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors)
+        private sealed class SelectorRowBuffer
         {
-            if (targetIndex < offset || targetIndex >= offset + pageSize)
+            public SelectorRowBuffer(CHAR_INFO[] cells)
             {
-                return;
+                Cells = cells;
             }
 
-            var row = startTop + SelectorHeaderLines + (targetIndex - offset);
-            RedrawSelectorListRow(targets, targetIndex, selectedIndex, row, width,
-                highlightBackground, originalForeground, originalBackground, useAnsiColors);
-        }
+            public CHAR_INFO[] Cells { get; }
 
-        private static void RedrawSelectorListRow(List<WindowCmd.TargetWindow> targets, int targetIndex, int selectedIndex,
-            int row, int width, ConsoleColor highlightBackground, ConsoleColor originalForeground,
-            ConsoleColor originalBackground, bool useAnsiColors)
-        {
-            if (!TrySetSelectorCursorPosition(0, row))
+            public bool EqualsCells(SelectorRowBuffer other)
             {
-                return;
-            }
+                if (other == null || other.Cells == null || other.Cells.Length != Cells.Length)
+                {
+                    return false;
+                }
 
-            var selected = targetIndex == selectedIndex;
-            var rowBackground = selected ? highlightBackground : originalBackground;
-            SetSelectorColors(originalForeground, rowBackground, useAnsiColors);
-            ClearSelectorCurrentLine(useAnsiColors);
+                for (var i = 0; i < Cells.Length; i++)
+                {
+                    if (Cells[i].UnicodeChar != other.Cells[i].UnicodeChar
+                        || Cells[i].Attributes != other.Cells[i].Attributes)
+                    {
+                        return false;
+                    }
+                }
 
-            if (targetIndex < targets.Count)
-            {
-                WriteTargetWindowSelectorLine(targets[targetIndex], width, selected, originalForeground, rowBackground, useAnsiColors);
-            }
-            else
-            {
-                WriteSelectorLine(string.Empty, width, useAnsiColors);
+                return true;
             }
         }
 
@@ -867,8 +1096,10 @@ namespace WindowResizer.CLI.Commands
             public int LastPageSize { get; private set; } = -1;
             public int LastWidth { get; private set; } = -1;
             public int LastTargetCount { get; private set; } = -1;
+            public List<SelectorRowBuffer> LastRows { get; private set; }
 
-            public void Update(int selectedIndex, int offset, int pageSize, int width, int targetCount)
+            public void Update(int selectedIndex, int offset, int pageSize, int width, int targetCount,
+                List<SelectorRowBuffer> rows)
             {
                 IsInvalid = false;
                 LastSelectedIndex = selectedIndex;
@@ -876,11 +1107,13 @@ namespace WindowResizer.CLI.Commands
                 LastPageSize = pageSize;
                 LastWidth = width;
                 LastTargetCount = targetCount;
+                LastRows = rows;
             }
 
             public void Invalidate()
             {
                 IsInvalid = true;
+                LastRows = null;
             }
         }
 
@@ -1224,6 +1457,11 @@ namespace WindowResizer.CLI.Commands
         }
 
 
+        private static short GetSelectorAttribute(ConsoleColor foreground, ConsoleColor background)
+        {
+            return (short)(((int)foreground & 0x0F) | (((int)background & 0x0F) << 4));
+        }
+
         private static void SetSelectorColors(ConsoleColor foreground, ConsoleColor background, bool useAnsiColors)
         {
             Console.ForegroundColor = foreground;
@@ -1328,6 +1566,10 @@ namespace WindowResizer.CLI.Commands
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool PeekConsoleInput(IntPtr hConsoleInput, out INPUT_RECORD lpBuffer, uint nLength, out uint lpNumberOfEventsRead);
 
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool WriteConsoleOutput(IntPtr hConsoleOutput, CHAR_INFO[] lpBuffer,
+            COORD dwBufferSize, COORD dwBufferCoord, ref SMALL_RECT lpWriteRegion);
+
         [StructLayout(LayoutKind.Sequential)]
         private struct INPUT_RECORD
         {
@@ -1371,6 +1613,25 @@ namespace WindowResizer.CLI.Commands
         {
             public short X;
             public short Y;
+        }
+
+        [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
+        private struct CHAR_INFO
+        {
+            [FieldOffset(0)]
+            public char UnicodeChar;
+
+            [FieldOffset(2)]
+            public short Attributes;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SMALL_RECT
+        {
+            public short Left;
+            public short Top;
+            public short Right;
+            public short Bottom;
         }
 
         [StructLayout(LayoutKind.Sequential)]
