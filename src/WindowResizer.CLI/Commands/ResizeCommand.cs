@@ -837,6 +837,21 @@ namespace WindowResizer.CLI.Commands
             return builder.ToRowBuffer();
         }
 
+        private static SelectorRowBuffer BuildSelectorBlankRow(int width, List<SelectorRowBuffer> currentRows)
+        {
+            var attribute = currentRows != null && currentRows.Count > 0 && currentRows[0].Cells.Length > 0
+                ? currentRows[0].Cells[0].Attributes
+                : GetSelectorAttribute(Console.ForegroundColor, Console.BackgroundColor);
+            var cells = new CHAR_INFO[Math.Max(1, width)];
+            for (var i = 0; i < cells.Length; i++)
+            {
+                cells[i].UnicodeChar = ' ';
+                cells[i].Attributes = attribute;
+            }
+
+            return new SelectorRowBuffer(cells);
+        }
+
         private static SelectorRowBuffer BuildSelectorListRow(List<WindowCmd.TargetWindow> targets, int targetIndex,
             int selectedIndex, int width, ConsoleColor highlightBackground,
             ConsoleColor originalForeground, ConsoleColor originalBackground)
@@ -909,6 +924,7 @@ namespace WindowResizer.CLI.Commands
             }
 
             var oldRows = renderState.LastRows;
+            var maxWritableRows = GetSafeConsoleHeight();
             for (var i = 0; i < rows.Count; i++)
             {
                 var oldRow = oldRows != null && i < oldRows.Count ? oldRows[i] : null;
@@ -917,9 +933,36 @@ namespace WindowResizer.CLI.Commands
                     continue;
                 }
 
+                if (startTop + i >= maxWritableRows)
+                {
+                    continue;
+                }
+
                 if (!TryWriteSelectorRowBuffer(outputHandle, rows[i], startTop + i, width))
                 {
                     return false;
+                }
+            }
+
+            // When the terminal height shrinks, the footer moves upward. The old
+            // footer/list rows below the new footer would otherwise remain in the
+            // alternate screen buffer and can appear as several stale "Showing ..."
+            // lines. Clear rows that existed in the previous render but no longer
+            // exist in the current visible page.
+            if (oldRows != null && oldRows.Count > rows.Count)
+            {
+                var blankRow = BuildSelectorBlankRow(width, rows);
+                for (var i = rows.Count; i < oldRows.Count; i++)
+                {
+                    if (startTop + i >= maxWritableRows)
+                    {
+                        continue;
+                    }
+
+                    if (!TryWriteSelectorRowBuffer(outputHandle, blankRow, startTop + i, width))
+                    {
+                        return false;
+                    }
                 }
             }
 
@@ -988,8 +1031,19 @@ namespace WindowResizer.CLI.Commands
 
             if (fullRedraw)
             {
+                var previousRowCount = renderState.LastPageSize > 0
+                    ? SelectorHeaderLines + renderState.LastPageSize + SelectorFooterLines
+                    : 0;
+                var currentRowCount = SelectorHeaderLines + pageSize + SelectorFooterLines;
+
                 RenderTargetWindowSelectorFull(targets, selectedIndex, offset, pageSize, startTop,
                     width, visibleCount, highlightBackground, originalForeground, originalBackground, useAnsiColors);
+
+                if (previousRowCount > currentRowCount)
+                {
+                    ClearSelectorRows(startTop + currentRowCount, previousRowCount - currentRowCount,
+                        width, originalForeground, originalBackground, useAnsiColors);
+                }
             }
             else if (renderState.LastSelectedIndex != selectedIndex)
             {
@@ -1175,6 +1229,28 @@ namespace WindowResizer.CLI.Commands
             {
                 IsInvalid = true;
                 LastRows = null;
+            }
+        }
+
+        private static void ClearSelectorRows(int startRow, int count, int width,
+            ConsoleColor foreground, ConsoleColor background, bool useAnsiColors)
+        {
+            if (count <= 0 || width <= 0)
+            {
+                return;
+            }
+
+            SetSelectorColors(foreground, background, useAnsiColors);
+            var maxRows = GetSafeConsoleHeight();
+            for (var i = 0; i < count; i++)
+            {
+                var row = startRow + i;
+                if (row < 0 || row >= maxRows)
+                {
+                    continue;
+                }
+
+                WriteSelectorLine(row, string.Empty, width, useAnsiColors);
             }
         }
 
