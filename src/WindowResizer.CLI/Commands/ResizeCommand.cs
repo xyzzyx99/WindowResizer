@@ -17,7 +17,7 @@ namespace WindowResizer.CLI.Commands
     internal class ResizeCommand : Command
     {
         private const int SelectorResizePollMilliseconds = 50;
-        private const int SelectorResizeDebounceMilliseconds = 250;
+        private const int SelectorWidthResizeThrottleMilliseconds = 200;
 
         public ResizeCommand() : base("resize", "Resize window by process/title, use -w/--window for direct placement, or -i/--interactive to choose a window.")
         {
@@ -190,10 +190,7 @@ namespace WindowResizer.CLI.Commands
             ConsoleColor originalForeground, ConsoleColor originalBackground, bool usingAlternateScreen,
             SelectorRenderState renderState, ref int lastConsoleWidth, ref int lastConsoleHeight)
         {
-            var pendingResize = false;
-            var pendingWidth = lastConsoleWidth;
-            var pendingHeight = lastConsoleHeight;
-            var lastResizeTick = Environment.TickCount;
+            var lastWidthResizeRenderTick = unchecked(Environment.TickCount - SelectorWidthResizeThrottleMilliseconds);
 
             while (true)
             {
@@ -210,26 +207,24 @@ namespace WindowResizer.CLI.Commands
 
                 if (TryGetConsoleSizeChange(lastConsoleWidth, lastConsoleHeight, out var currentWidth, out var currentHeight))
                 {
-                    // A console program cannot reliably know when the user releases the mouse
-                    // button after dragging the terminal border, or when keyboard-based terminal
-                    // resizing has ended. Treat resize as finished only after the reported terminal
-                    // size has stayed unchanged for a short interval, then repaint once. This avoids
-                    // repeatedly drawing intermediate frames that can leave ghost images.
-                    if (!pendingResize || currentWidth != pendingWidth || currentHeight != pendingHeight)
+                    var widthChanged = currentWidth != lastConsoleWidth;
+
+                    if (widthChanged)
                     {
-                        pendingResize = true;
-                        pendingWidth = currentWidth;
-                        pendingHeight = currentHeight;
-                        lastResizeTick = Environment.TickCount;
+                        // The console app cannot see the terminal border drag itself, only the
+                        // reported console size. Redraw width changes at most every 0.2 seconds
+                        // so dragging the terminal edge does not repaint every intermediate frame.
+                        var now = Environment.TickCount;
+                        if (unchecked(now - lastWidthResizeRenderTick) < SelectorWidthResizeThrottleMilliseconds)
+                        {
+                            HideSelectorCursor(usingAlternateScreen);
+                            Thread.Sleep(SelectorResizePollMilliseconds);
+                            continue;
+                        }
+
+                        lastWidthResizeRenderTick = now;
                     }
 
-                    if (unchecked(Environment.TickCount - lastResizeTick) < SelectorResizeDebounceMilliseconds)
-                    {
-                        Thread.Sleep(SelectorResizePollMilliseconds);
-                        continue;
-                    }
-
-                    pendingResize = false;
                     lastConsoleWidth = currentWidth;
                     lastConsoleHeight = currentHeight;
                     HideSelectorCursor(usingAlternateScreen);
