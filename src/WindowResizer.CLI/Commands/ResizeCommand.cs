@@ -985,11 +985,26 @@ namespace WindowResizer.CLI.Commands
             }
 
             var oldRows = renderState.LastRows;
+
+            // If the selector geometry changed, copy one complete frame, not a
+            // collection of individually changed rows. This frame includes the
+            // header, all visible list rows, and the footer/status message. It
+            // prevents stale footer rows such as multiple old "Showing ..." lines
+            // from surviving terminal height changes.
+            var geometryChanged = renderState.IsInvalid
+                                  || oldRows == null
+                                  || oldRows.Count != rows.Count
+                                  || renderState.LastWidth != width;
+            if (geometryChanged)
+            {
+                return TryWriteSelectorFrameBuffer(outputHandle, rows, startTop, width);
+            }
+
             var maxWritableRows = GetSafeConsoleHeight();
             for (var i = 0; i < rows.Count; i++)
             {
-                var oldRow = oldRows != null && i < oldRows.Count ? oldRows[i] : null;
-                if (!renderState.IsInvalid && rows[i].EqualsCells(oldRow))
+                var oldRow = i < oldRows.Count ? oldRows[i] : null;
+                if (rows[i].EqualsCells(oldRow))
                 {
                     continue;
                 }
@@ -1005,29 +1020,66 @@ namespace WindowResizer.CLI.Commands
                 }
             }
 
-            // When the terminal height shrinks, the footer moves upward. The old
-            // footer/list rows below the new footer would otherwise remain in the
-            // alternate screen buffer and can appear as several stale "Showing ..."
-            // lines. Clear rows that existed in the previous render but no longer
-            // exist in the current visible page.
-            if (oldRows != null && oldRows.Count > rows.Count)
-            {
-                var blankRow = BuildSelectorBlankRow(width, rows);
-                for (var i = rows.Count; i < oldRows.Count; i++)
-                {
-                    if (startTop + i >= maxWritableRows)
-                    {
-                        continue;
-                    }
+            return true;
+        }
 
-                    if (!TryWriteSelectorRowBuffer(outputHandle, blankRow, startTop + i, width))
-                    {
-                        return false;
-                    }
-                }
+        private static bool TryWriteSelectorFrameBuffer(IntPtr outputHandle, List<SelectorRowBuffer> rows, int startTop, int width)
+        {
+            if (rows == null || rows.Count == 0 || startTop < 0 || width <= 0)
+            {
+                return false;
             }
 
-            return true;
+            try
+            {
+                int viewportLeft;
+                int viewportTop;
+                int viewportWidth;
+                int viewportHeight;
+                if (TryGetSelectorViewport(out viewportLeft, out viewportTop, out viewportWidth, out viewportHeight))
+                {
+                    if (startTop >= viewportHeight || width > viewportWidth)
+                    {
+                        return true;
+                    }
+                }
+                else
+                {
+                    viewportLeft = 0;
+                    viewportTop = 0;
+                    viewportHeight = GetSafeConsoleHeight();
+                }
+
+                var writableRows = Math.Min(rows.Count, Math.Max(0, viewportHeight - startTop));
+                if (writableRows <= 0)
+                {
+                    return true;
+                }
+
+                var cells = new CHAR_INFO[width * writableRows];
+                for (var row = 0; row < writableRows; row++)
+                {
+                    var source = rows[row].Cells;
+                    Array.Copy(source, 0, cells, row * width, width);
+                }
+
+                var absoluteTop = viewportTop + startTop;
+                var bufferSize = new COORD { X = (short)width, Y = (short)writableRows };
+                var bufferCoord = new COORD { X = 0, Y = 0 };
+                var writeRegion = new SMALL_RECT
+                {
+                    Left = (short)viewportLeft,
+                    Top = (short)absoluteTop,
+                    Right = (short)(viewportLeft + width - 1),
+                    Bottom = (short)(absoluteTop + writableRows - 1)
+                };
+
+                return WriteConsoleOutput(outputHandle, cells, bufferSize, bufferCoord, ref writeRegion);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static bool TryWriteSelectorRowBuffer(IntPtr outputHandle, SelectorRowBuffer row, int top, int width)
