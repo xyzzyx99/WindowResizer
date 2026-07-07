@@ -361,7 +361,8 @@ namespace WindowResizer.CLI.Commands
                 return false;
             }
 
-            var listRow = mouseEvent.dwMousePosition.Y - (startTop + SelectorHeaderLines);
+            var viewportTop = GetSelectorViewportTop();
+            var listRow = mouseEvent.dwMousePosition.Y - (viewportTop + startTop + SelectorHeaderLines);
             if (listRow < 0 || listRow >= pageSize)
             {
                 return false;
@@ -447,6 +448,15 @@ namespace WindowResizer.CLI.Commands
 
         private static int GetSafeConsoleWidth()
         {
+            int left;
+            int top;
+            int width;
+            int height;
+            if (TryGetSelectorViewport(out left, out top, out width, out height))
+            {
+                return width;
+            }
+
             try
             {
                 return Console.WindowWidth;
@@ -459,6 +469,15 @@ namespace WindowResizer.CLI.Commands
 
         private static int GetSafeConsoleHeight()
         {
+            int left;
+            int top;
+            int width;
+            int height;
+            if (TryGetSelectorViewport(out left, out top, out width, out height))
+            {
+                return height;
+            }
+
             try
             {
                 return Console.WindowHeight;
@@ -466,6 +485,48 @@ namespace WindowResizer.CLI.Commands
             catch
             {
                 return 0;
+            }
+        }
+
+        private static int GetSelectorViewportTop()
+        {
+            int left;
+            int top;
+            int width;
+            int height;
+            return TryGetSelectorViewport(out left, out top, out width, out height) ? top : 0;
+        }
+
+        private static bool TryGetSelectorViewport(out int left, out int top, out int width, out int height)
+        {
+            left = 0;
+            top = 0;
+            width = 0;
+            height = 0;
+
+            try
+            {
+                var outputHandle = GetStdHandle(StdOutputHandle);
+                if (outputHandle == IntPtr.Zero || outputHandle == new IntPtr(-1))
+                {
+                    return false;
+                }
+
+                CONSOLE_SCREEN_BUFFER_INFO info;
+                if (!GetConsoleScreenBufferInfo(outputHandle, out info))
+                {
+                    return false;
+                }
+
+                left = info.srWindow.Left;
+                top = info.srWindow.Top;
+                width = info.srWindow.Right - info.srWindow.Left + 1;
+                height = info.srWindow.Bottom - info.srWindow.Top + 1;
+                return width > 0 && height > 0;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -667,7 +728,7 @@ namespace WindowResizer.CLI.Commands
 
             try
             {
-                var pageSize = Console.WindowHeight - SelectorHeaderLines - SelectorFooterLines;
+                var pageSize = GetSafeConsoleHeight() - SelectorHeaderLines - SelectorFooterLines;
                 return Math.Max(minimumPageSize, pageSize);
             }
             catch
@@ -978,14 +1039,32 @@ namespace WindowResizer.CLI.Commands
 
             try
             {
+                int viewportLeft;
+                int viewportTop;
+                int viewportWidth;
+                int viewportHeight;
+                if (TryGetSelectorViewport(out viewportLeft, out viewportTop, out viewportWidth, out viewportHeight))
+                {
+                    if (top >= viewportHeight || width > viewportWidth)
+                    {
+                        return true;
+                    }
+                }
+                else
+                {
+                    viewportLeft = 0;
+                    viewportTop = 0;
+                }
+
+                var absoluteTop = viewportTop + top;
                 var bufferSize = new COORD { X = (short)width, Y = 1 };
                 var bufferCoord = new COORD { X = 0, Y = 0 };
                 var writeRegion = new SMALL_RECT
                 {
-                    Left = 0,
-                    Top = (short)top,
-                    Right = (short)(width - 1),
-                    Bottom = (short)top
+                    Left = (short)viewportLeft,
+                    Top = (short)absoluteTop,
+                    Right = (short)(viewportLeft + width - 1),
+                    Bottom = (short)absoluteTop
                 };
 
                 return WriteConsoleOutput(outputHandle, row.Cells, bufferSize, bufferCoord, ref writeRegion);
@@ -1265,6 +1344,16 @@ namespace WindowResizer.CLI.Commands
         {
             try
             {
+                int viewportLeft;
+                int viewportTop;
+                int viewportWidth;
+                int viewportHeight;
+                if (TryGetSelectorViewport(out viewportLeft, out viewportTop, out viewportWidth, out viewportHeight))
+                {
+                    left += viewportLeft;
+                    top += viewportTop;
+                }
+
                 Console.SetCursorPosition(left, top);
                 return true;
             }
@@ -1707,6 +1796,9 @@ namespace WindowResizer.CLI.Commands
         private static extern bool WriteConsoleOutput(IntPtr hConsoleOutput, CHAR_INFO[] lpBuffer,
             COORD dwBufferSize, COORD dwBufferCoord, ref SMALL_RECT lpWriteRegion);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetConsoleScreenBufferInfo(IntPtr hConsoleOutput, out CONSOLE_SCREEN_BUFFER_INFO lpConsoleScreenBufferInfo);
+
         [StructLayout(LayoutKind.Sequential)]
         private struct INPUT_RECORD
         {
@@ -1750,6 +1842,16 @@ namespace WindowResizer.CLI.Commands
         {
             public short X;
             public short Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CONSOLE_SCREEN_BUFFER_INFO
+        {
+            public COORD dwSize;
+            public COORD dwCursorPosition;
+            public short wAttributes;
+            public SMALL_RECT srWindow;
+            public COORD dwMaximumWindowSize;
         }
 
         [StructLayout(LayoutKind.Explicit, CharSet = CharSet.Unicode)]
