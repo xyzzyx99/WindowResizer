@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.CommandLine;
 using System.CommandLine.Invocation;
@@ -116,6 +116,7 @@ namespace WindowResizer.CLI.Commands
             var highlightBackground = GetDarkInvertedConsoleColor(originalBackground);
             var lastConsoleWidth = GetSafeConsoleWidth();
             var lastConsoleHeight = GetSafeConsoleHeight();
+            var renderState = new SelectorRenderState();
 
             try
             {
@@ -124,10 +125,10 @@ namespace WindowResizer.CLI.Commands
                 {
                     pageSize = GetSelectorPageSize();
                     RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
-                        highlightBackground, originalForeground, originalBackground, usingAlternateScreen);
+                        highlightBackground, originalForeground, originalBackground, usingAlternateScreen, renderState);
 
                     var key = ReadSelectorKey(targets, ref selectedIndex, ref offset, ref pageSize, startTop,
-                        highlightBackground, originalForeground, originalBackground, usingAlternateScreen,
+                        highlightBackground, originalForeground, originalBackground, usingAlternateScreen, renderState,
                         ref lastConsoleWidth, ref lastConsoleHeight);
                     switch (key.Key)
                     {
@@ -182,7 +183,7 @@ namespace WindowResizer.CLI.Commands
         private static ConsoleKeyInfo ReadSelectorKey(List<WindowCmd.TargetWindow> targets, ref int selectedIndex, ref int offset,
             ref int pageSize, int startTop, ConsoleColor highlightBackground,
             ConsoleColor originalForeground, ConsoleColor originalBackground, bool usingAlternateScreen,
-            ref int lastConsoleWidth, ref int lastConsoleHeight)
+            SelectorRenderState renderState, ref int lastConsoleWidth, ref int lastConsoleHeight)
         {
             while (true)
             {
@@ -202,8 +203,9 @@ namespace WindowResizer.CLI.Commands
                     HideSelectorCursor(usingAlternateScreen);
                     TryClearSelectorScreen();
                     pageSize = GetSelectorPageSize();
+                    renderState.Invalidate();
                     RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
-                        highlightBackground, originalForeground, originalBackground, usingAlternateScreen);
+                        highlightBackground, originalForeground, originalBackground, usingAlternateScreen, renderState);
                 }
 
                 HideSelectorCursor(usingAlternateScreen);
@@ -749,7 +751,7 @@ namespace WindowResizer.CLI.Commands
 
         private static void RenderTargetWindowSelector(List<WindowCmd.TargetWindow> targets, int selectedIndex, ref int offset,
             int pageSize, int startTop, ConsoleColor highlightBackground,
-            ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors)
+            ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors, SelectorRenderState renderState)
         {
             HideSelectorCursor(useAnsiColors);
 
@@ -762,35 +764,52 @@ namespace WindowResizer.CLI.Commands
                 offset = selectedIndex - pageSize + 1;
             }
 
+            offset = Math.Max(0, Math.Min(offset, Math.Max(0, targets.Count - pageSize)));
+
             var width = Math.Max(20, GetSafeSelectorWidth());
+            var visibleCount = Math.Min(pageSize, Math.Max(0, targets.Count - offset));
+            var fullRedraw = renderState.IsInvalid
+                             || renderState.LastOffset != offset
+                             || renderState.LastPageSize != pageSize
+                             || renderState.LastWidth != width
+                             || renderState.LastTargetCount != targets.Count;
+
+            if (fullRedraw)
+            {
+                RenderTargetWindowSelectorFull(targets, selectedIndex, offset, pageSize, startTop,
+                    width, visibleCount, highlightBackground, originalForeground, originalBackground, useAnsiColors);
+            }
+            else if (renderState.LastSelectedIndex != selectedIndex)
+            {
+                RedrawSelectorRowIfVisible(targets, renderState.LastSelectedIndex, selectedIndex, offset, pageSize, startTop,
+                    width, highlightBackground, originalForeground, originalBackground, useAnsiColors);
+                RedrawSelectorRowIfVisible(targets, selectedIndex, selectedIndex, offset, pageSize, startTop,
+                    width, highlightBackground, originalForeground, originalBackground, useAnsiColors);
+            }
+
+            renderState.Update(selectedIndex, offset, pageSize, width, targets.Count);
+
+            // Leave the cursor in a harmless position and hide it again after
+            // every paint. Resizing the terminal can temporarily reveal the
+            // cursor at the last write position otherwise.
+            TrySetSelectorCursorPosition(0, 0);
+            HideSelectorCursor(useAnsiColors);
+        }
+
+        private static void RenderTargetWindowSelectorFull(List<WindowCmd.TargetWindow> targets, int selectedIndex, int offset,
+            int pageSize, int startTop, int width, int visibleCount, ConsoleColor highlightBackground,
+            ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors)
+        {
             var row = startTop;
             SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
             WriteSelectorLine(row++, "Select a window/application:", width, useAnsiColors);
             SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
             WriteSelectorLine(row++, "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc.", width, useAnsiColors);
 
-            var visibleCount = Math.Min(pageSize, targets.Count - offset);
             for (var i = 0; i < pageSize; i++)
             {
-                var targetIndex = offset + i;
-                var selected = targetIndex == selectedIndex;
-                var rowBackground = selected ? highlightBackground : originalBackground;
-
-                if (!TrySetSelectorCursorPosition(0, row++))
-                {
-                    return;
-                }
-                SetSelectorColors(originalForeground, rowBackground, useAnsiColors);
-                ClearSelectorCurrentLine(useAnsiColors);
-
-                if (targetIndex < targets.Count)
-                {
-                    WriteTargetWindowSelectorLine(targets[targetIndex], width, selected, originalForeground, rowBackground, useAnsiColors);
-                }
-                else
-                {
-                    WriteSelectorLine(string.Empty, width, useAnsiColors);
-                }
+                RedrawSelectorListRow(targets, offset + i, selectedIndex, row++, width,
+                    highlightBackground, originalForeground, originalBackground, useAnsiColors);
             }
 
             SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
@@ -798,12 +817,69 @@ namespace WindowResizer.CLI.Commands
                 ? $"Showing {offset + 1}-{offset + visibleCount} of {targets.Count}."
                 : $"Showing {targets.Count} window(s).";
             WriteSelectorLine(row, footer, width, useAnsiColors);
+        }
 
-            // Leave the cursor in a harmless position and hide it again after
-            // every paint. Resizing the terminal can temporarily reveal the
-            // cursor at the last write position otherwise.
-            TrySetSelectorCursorPosition(0, 0);
-            HideSelectorCursor(useAnsiColors);
+        private static void RedrawSelectorRowIfVisible(List<WindowCmd.TargetWindow> targets, int targetIndex, int selectedIndex,
+            int offset, int pageSize, int startTop, int width, ConsoleColor highlightBackground,
+            ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors)
+        {
+            if (targetIndex < offset || targetIndex >= offset + pageSize)
+            {
+                return;
+            }
+
+            var row = startTop + SelectorHeaderLines + (targetIndex - offset);
+            RedrawSelectorListRow(targets, targetIndex, selectedIndex, row, width,
+                highlightBackground, originalForeground, originalBackground, useAnsiColors);
+        }
+
+        private static void RedrawSelectorListRow(List<WindowCmd.TargetWindow> targets, int targetIndex, int selectedIndex,
+            int row, int width, ConsoleColor highlightBackground, ConsoleColor originalForeground,
+            ConsoleColor originalBackground, bool useAnsiColors)
+        {
+            if (!TrySetSelectorCursorPosition(0, row))
+            {
+                return;
+            }
+
+            var selected = targetIndex == selectedIndex;
+            var rowBackground = selected ? highlightBackground : originalBackground;
+            SetSelectorColors(originalForeground, rowBackground, useAnsiColors);
+            ClearSelectorCurrentLine(useAnsiColors);
+
+            if (targetIndex < targets.Count)
+            {
+                WriteTargetWindowSelectorLine(targets[targetIndex], width, selected, originalForeground, rowBackground, useAnsiColors);
+            }
+            else
+            {
+                WriteSelectorLine(string.Empty, width, useAnsiColors);
+            }
+        }
+
+        private sealed class SelectorRenderState
+        {
+            public bool IsInvalid { get; private set; } = true;
+            public int LastSelectedIndex { get; private set; } = -1;
+            public int LastOffset { get; private set; } = -1;
+            public int LastPageSize { get; private set; } = -1;
+            public int LastWidth { get; private set; } = -1;
+            public int LastTargetCount { get; private set; } = -1;
+
+            public void Update(int selectedIndex, int offset, int pageSize, int width, int targetCount)
+            {
+                IsInvalid = false;
+                LastSelectedIndex = selectedIndex;
+                LastOffset = offset;
+                LastPageSize = pageSize;
+                LastWidth = width;
+                LastTargetCount = targetCount;
+            }
+
+            public void Invalidate()
+            {
+                IsInvalid = true;
+            }
         }
 
         private static void FinishTargetWindowSelector(int startTop, int pageSize,
