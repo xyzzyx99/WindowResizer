@@ -530,6 +530,62 @@ namespace WindowResizer.CLI.Commands
             }
         }
 
+        private static bool TryAnchorSelectorViewportToOrigin()
+        {
+            try
+            {
+                var outputHandle = GetStdHandle(StdOutputHandle);
+                if (outputHandle == IntPtr.Zero || outputHandle == new IntPtr(-1))
+                {
+                    return false;
+                }
+
+                CONSOLE_SCREEN_BUFFER_INFO info;
+                if (!GetConsoleScreenBufferInfo(outputHandle, out info))
+                {
+                    return false;
+                }
+
+                var width = info.srWindow.Right - info.srWindow.Left + 1;
+                var height = info.srWindow.Bottom - info.srWindow.Top + 1;
+                if (width <= 0 || height <= 0)
+                {
+                    return false;
+                }
+
+                // Windows Terminal/conhost can keep a larger screen buffer than
+                // the visible terminal height. When the terminal is shrunk, the
+                // viewport can slide down to old buffer rows, which makes stale
+                // footer lines such as several old "Showing ..." messages appear.
+                // Keep the alternate-screen selector viewport anchored at the
+                // top-left of the screen buffer so rows are added/removed from the
+                // bottom of the visible page instead of exposing old buffer content.
+                if (info.srWindow.Left == 0 && info.srWindow.Top == 0)
+                {
+                    return true;
+                }
+
+                if (width > info.dwSize.X || height > info.dwSize.Y)
+                {
+                    return false;
+                }
+
+                var rect = new SMALL_RECT
+                {
+                    Left = 0,
+                    Top = 0,
+                    Right = (short)(width - 1),
+                    Bottom = (short)(height - 1)
+                };
+
+                return SetConsoleWindowInfo(outputHandle, true, ref rect);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static void HideSelectorCursor(bool usingAlternateScreen)
         {
             TrySetConsoleCursorVisible(false);
@@ -815,6 +871,7 @@ namespace WindowResizer.CLI.Commands
             ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors, SelectorRenderState renderState)
         {
             HideSelectorCursor(useAnsiColors);
+            TryAnchorSelectorViewportToOrigin();
 
             AdjustSelectorViewport(targets.Count, selectedIndex, pageSize, ref offset);
 
@@ -1850,6 +1907,9 @@ namespace WindowResizer.CLI.Commands
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool GetConsoleScreenBufferInfo(IntPtr hConsoleOutput, out CONSOLE_SCREEN_BUFFER_INFO lpConsoleScreenBufferInfo);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetConsoleWindowInfo(IntPtr hConsoleOutput, bool bAbsolute, ref SMALL_RECT lpConsoleWindow);
 
         [StructLayout(LayoutKind.Sequential)]
         private struct INPUT_RECORD
