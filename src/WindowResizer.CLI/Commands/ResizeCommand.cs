@@ -765,9 +765,9 @@ namespace WindowResizer.CLI.Commands
             var width = Math.Max(20, GetSafeSelectorWidth());
             var row = startTop;
             SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
-            WriteSelectorLine(row++, "Select a window/application:", width);
+            WriteSelectorLine(row++, "Select a window/application:", width, useAnsiColors);
             SetSelectorColors(originalForeground, originalBackground, useAnsiColors);
-            WriteSelectorLine(row++, "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc.", width);
+            WriteSelectorLine(row++, "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc.", width, useAnsiColors);
 
             var visibleCount = Math.Min(pageSize, targets.Count - offset);
             for (var i = 0; i < pageSize; i++)
@@ -781,6 +781,7 @@ namespace WindowResizer.CLI.Commands
                     return;
                 }
                 SetSelectorColors(originalForeground, rowBackground, useAnsiColors);
+                ClearSelectorCurrentLine(useAnsiColors);
 
                 if (targetIndex < targets.Count)
                 {
@@ -788,7 +789,7 @@ namespace WindowResizer.CLI.Commands
                 }
                 else
                 {
-                    WriteSelectorLine(string.Empty, width);
+                    WriteSelectorLine(string.Empty, width, useAnsiColors);
                 }
             }
 
@@ -796,7 +797,7 @@ namespace WindowResizer.CLI.Commands
             var footer = targets.Count > visibleCount
                 ? $"Showing {offset + 1}-{offset + visibleCount} of {targets.Count}."
                 : $"Showing {targets.Count} window(s).";
-            WriteSelectorLine(row, footer, width);
+            WriteSelectorLine(row, footer, width, useAnsiColors);
 
             // Leave the cursor in a harmless position and hide it again after
             // every paint. Resizing the terminal can temporarily reveal the
@@ -825,22 +826,59 @@ namespace WindowResizer.CLI.Commands
             }
         }
 
-        private static void WriteSelectorLine(int row, string text, int width)
+        private static void WriteSelectorLine(int row, string text, int width, bool useAnsiColors)
         {
             if (TrySetSelectorCursorPosition(0, row))
             {
-                WriteSelectorLine(text, width);
+                WriteSelectorLine(text, width, useAnsiColors);
             }
         }
 
-        private static void WriteSelectorLine(string text, int width)
+        private static void WriteSelectorLine(string text, int width, bool useAnsiColors)
         {
+            ClearSelectorCurrentLine(useAnsiColors);
+
             if (text.Length > width)
             {
                 text = text.Substring(0, Math.Max(0, width - 1)) + "…";
             }
 
             Console.Write(text.PadRight(width));
+            ClearSelectorLineRemainder(useAnsiColors);
+        }
+
+        private static void ClearSelectorCurrentLine(bool useAnsiColors)
+        {
+            if (!useAnsiColors)
+            {
+                return;
+            }
+
+            try
+            {
+                Console.Write("\x1b[2K");
+            }
+            catch
+            {
+                // Ignore consoles that do not support VT erase-line.
+            }
+        }
+
+        private static void ClearSelectorLineRemainder(bool useAnsiColors)
+        {
+            if (!useAnsiColors)
+            {
+                return;
+            }
+
+            try
+            {
+                Console.Write("\x1b[K");
+            }
+            catch
+            {
+                // Ignore consoles that do not support VT erase-line.
+            }
         }
 
         private static void WriteTargetWindowSelectorLine(WindowCmd.TargetWindow target, int width, bool selected,
@@ -866,6 +904,7 @@ namespace WindowResizer.CLI.Commands
                 Console.Write(new string(' ', width - used));
             }
 
+            ClearSelectorLineRemainder(useAnsiColors);
         }
 
         private static int WriteProcessInfo(WindowCmd.TargetWindow target, int availableWidth, bool selected,
