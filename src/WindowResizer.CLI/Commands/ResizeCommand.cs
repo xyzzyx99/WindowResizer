@@ -979,6 +979,44 @@ namespace WindowResizer.CLI.Commands
             renderState.Update(selectedIndex, offset, pageSize, width, targets.Count, null);
         }
 
+        private static void RedrawSelectorRowIfVisible(List<WindowCmd.TargetWindow> targets, int targetIndex, int selectedIndex,
+            int offset, int pageSize, int startTop, int width, ConsoleColor highlightBackground,
+            ConsoleColor originalForeground, ConsoleColor originalBackground, bool useAnsiColors)
+        {
+            if (targetIndex < offset || targetIndex >= offset + pageSize)
+            {
+                return;
+            }
+
+            var row = startTop + SelectorHeaderLines + (targetIndex - offset);
+            RedrawSelectorListRow(targets, targetIndex, selectedIndex, row, width,
+                highlightBackground, originalForeground, originalBackground, useAnsiColors);
+        }
+
+        private static void RedrawSelectorListRow(List<WindowCmd.TargetWindow> targets, int targetIndex, int selectedIndex,
+            int row, int width, ConsoleColor highlightBackground, ConsoleColor originalForeground,
+            ConsoleColor originalBackground, bool useAnsiColors)
+        {
+            if (!TrySetSelectorCursorPosition(0, row))
+            {
+                return;
+            }
+
+            var selected = targetIndex == selectedIndex;
+            var rowBackground = selected ? highlightBackground : originalBackground;
+            SetSelectorColors(originalForeground, rowBackground, useAnsiColors);
+            ClearSelectorCurrentLine(useAnsiColors);
+
+            if (targetIndex < targets.Count)
+            {
+                WriteTargetWindowSelectorLine(targets[targetIndex], width, selected, originalForeground, rowBackground, useAnsiColors);
+            }
+            else
+            {
+                WriteSelectorLine(string.Empty, width, useAnsiColors);
+            }
+        }
+
         private sealed class SelectorRowBuilder
         {
             private readonly int width;
