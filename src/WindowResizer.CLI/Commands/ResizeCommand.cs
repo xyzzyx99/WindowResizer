@@ -17,7 +17,7 @@ namespace WindowResizer.CLI.Commands
     internal class ResizeCommand : Command
     {
         private const int SelectorResizePollMilliseconds = 50;
-        private const int SelectorWidthResizeThrottleMilliseconds = 200;
+        private const int SelectorResizeStableMilliseconds = 200;
 
         public ResizeCommand() : base("resize", "Resize window by process/title, use -w/--window for direct placement, or -i/--interactive to choose a window.")
         {
@@ -190,7 +190,10 @@ namespace WindowResizer.CLI.Commands
             ConsoleColor originalForeground, ConsoleColor originalBackground, bool usingAlternateScreen,
             SelectorRenderState renderState, ref int lastConsoleWidth, ref int lastConsoleHeight)
         {
-            var lastWidthResizeRenderTick = unchecked(Environment.TickCount - SelectorWidthResizeThrottleMilliseconds);
+            var resizePending = false;
+            var pendingConsoleWidth = lastConsoleWidth;
+            var pendingConsoleHeight = lastConsoleHeight;
+            var pendingResizeTick = 0;
 
             while (true)
             {
@@ -205,32 +208,41 @@ namespace WindowResizer.CLI.Commands
                     return key;
                 }
 
-                if (TryGetConsoleSizeChange(lastConsoleWidth, lastConsoleHeight, out var currentWidth, out var currentHeight))
+                var currentWidth = GetSafeConsoleWidth();
+                var currentHeight = GetSafeConsoleHeight();
+                if (currentWidth != lastConsoleWidth || currentHeight != lastConsoleHeight)
                 {
-                    var widthChanged = currentWidth != lastConsoleWidth;
+                    var now = Environment.TickCount;
 
-                    if (widthChanged)
+                    if (!resizePending || currentWidth != pendingConsoleWidth || currentHeight != pendingConsoleHeight)
                     {
-                        // The console app cannot see the terminal border drag itself, only the
-                        // reported console size. Redraw width changes at most every 0.2 seconds
-                        // so dragging the terminal edge does not repaint every intermediate frame.
-                        var now = Environment.TickCount;
-                        if (unchecked(now - lastWidthResizeRenderTick) < SelectorWidthResizeThrottleMilliseconds)
-                        {
-                            HideSelectorCursor(usingAlternateScreen);
-                            Thread.Sleep(SelectorResizePollMilliseconds);
-                            continue;
-                        }
-
-                        lastWidthResizeRenderTick = now;
+                        pendingConsoleWidth = currentWidth;
+                        pendingConsoleHeight = currentHeight;
+                        pendingResizeTick = now;
+                        resizePending = true;
                     }
 
-                    lastConsoleWidth = currentWidth;
-                    lastConsoleHeight = currentHeight;
+                    // Do not redraw while the terminal border is still moving.
+                    // Redraw once only after the reported size has remained the
+                    // same for about 0.2 seconds.
+                    if (unchecked(now - pendingResizeTick) < SelectorResizeStableMilliseconds)
+                    {
+                        HideSelectorCursor(usingAlternateScreen);
+                        Thread.Sleep(SelectorResizePollMilliseconds);
+                        continue;
+                    }
+
+                    lastConsoleWidth = pendingConsoleWidth;
+                    lastConsoleHeight = pendingConsoleHeight;
+                    resizePending = false;
                     HideSelectorCursor(usingAlternateScreen);
                     pageSize = GetSelectorPageSize();
                     RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
                         highlightBackground, originalForeground, originalBackground, usingAlternateScreen, renderState);
+                }
+                else
+                {
+                    resizePending = false;
                 }
 
                 HideSelectorCursor(usingAlternateScreen);
