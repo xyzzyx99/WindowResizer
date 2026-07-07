@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.CommandLine;
 using System.CommandLine.Invocation;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Spectre.Console;
@@ -741,11 +743,11 @@ namespace WindowResizer.CLI.Commands
         {
             try
             {
-                return Math.Max(1, Math.Min(Console.BufferWidth, Console.WindowWidth) - 1);
+                return Math.Max(1, Math.Min(Console.BufferWidth, Console.WindowWidth));
             }
             catch
             {
-                return 79;
+                return 80;
             }
         }
 
@@ -766,7 +768,7 @@ namespace WindowResizer.CLI.Commands
 
             offset = Math.Max(0, Math.Min(offset, Math.Max(0, targets.Count - pageSize)));
 
-            var width = Math.Max(20, GetSafeSelectorWidth());
+            var width = GetSafeSelectorWidth();
             var visibleCount = Math.Min(pageSize, Math.Max(0, targets.Count - offset));
             var fullRedraw = renderState.IsInvalid
                              || renderState.LastOffset != offset
@@ -914,13 +916,15 @@ namespace WindowResizer.CLI.Commands
         {
             ClearSelectorCurrentLine(useAnsiColors);
 
-            if (text.Length > width)
-            {
-                text = text.Substring(0, Math.Max(0, width - 1)) + "…";
-            }
+            text = TrimSelectorTextToWidth(text, width);
+            Console.Write(text);
 
-            Console.Write(text.PadRight(width));
-            ClearSelectorLineRemainder(useAnsiColors);
+            var used = GetSelectorTextWidth(text);
+            if (used < width)
+            {
+                Console.Write(new string(' ', width - used));
+                ClearSelectorLineRemainder(useAnsiColors);
+            }
         }
 
         private static void ClearSelectorCurrentLine(bool useAnsiColors)
@@ -978,9 +982,8 @@ namespace WindowResizer.CLI.Commands
             {
                 SetSelectorColors(titleForeground, background, useAnsiColors);
                 Console.Write(new string(' ', width - used));
+                ClearSelectorLineRemainder(useAnsiColors);
             }
-
-            ClearSelectorLineRemainder(useAnsiColors);
         }
 
         private static int WriteProcessInfo(WindowCmd.TargetWindow target, int availableWidth, bool selected,
@@ -1023,16 +1026,201 @@ namespace WindowResizer.CLI.Commands
                 return 0;
             }
 
-            if (text.Length > availableWidth)
-            {
-                text = availableWidth == 1
-                    ? "…"
-                    : text.Substring(0, availableWidth - 1) + "…";
-            }
+            text = TrimSelectorTextToWidth(text, availableWidth);
 
             SetSelectorColors(foreground, background, useAnsiColors);
             Console.Write(text);
-            return text.Length;
+            return GetSelectorTextWidth(text);
+        }
+
+        private static string TrimSelectorTextToWidth(string text, int maxWidth)
+        {
+            if (maxWidth <= 0 || string.IsNullOrEmpty(text))
+            {
+                return string.Empty;
+            }
+
+            text = NormalizeSelectorText(text);
+
+            if (GetSelectorTextWidth(text) <= maxWidth)
+            {
+                return text;
+            }
+
+            var marker = GetSelectorTextWidth("…") <= maxWidth ? "…" : ".";
+            var markerWidth = GetSelectorTextWidth(marker);
+            var allowedTextWidth = Math.Max(0, maxWidth - markerWidth);
+            var builder = new StringBuilder();
+            var used = 0;
+
+            for (var i = 0; i < text.Length;)
+            {
+                var charCount = GetSelectorCodePointLength(text, i);
+                var charWidth = GetSelectorCodePointWidth(text, i);
+
+                if (used + charWidth > allowedTextWidth)
+                {
+                    break;
+                }
+
+                builder.Append(text, i, charCount);
+                used += charWidth;
+                i += charCount;
+            }
+
+            builder.Append(marker);
+            return builder.ToString();
+        }
+
+        private static string NormalizeSelectorText(string text)
+        {
+            return text.Replace('\r', ' ').Replace('\n', ' ');
+        }
+
+        private static int GetSelectorTextWidth(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return 0;
+            }
+
+            var width = 0;
+            for (var i = 0; i < text.Length;)
+            {
+                width += GetSelectorCodePointWidth(text, i);
+                i += GetSelectorCodePointLength(text, i);
+            }
+
+            return width;
+        }
+
+        private static int GetSelectorCodePointLength(string text, int index)
+        {
+            return index + 1 < text.Length
+                   && char.IsHighSurrogate(text[index])
+                   && char.IsLowSurrogate(text[index + 1])
+                ? 2
+                : 1;
+        }
+
+        private static int GetSelectorCodePointWidth(string text, int index)
+        {
+            var category = CharUnicodeInfo.GetUnicodeCategory(text, index);
+            if (category == UnicodeCategory.NonSpacingMark
+                || category == UnicodeCategory.EnclosingMark
+                || category == UnicodeCategory.Format
+                || category == UnicodeCategory.Control)
+            {
+                return 0;
+            }
+
+            var codePoint = GetSelectorCodePoint(text, index);
+            return IsSelectorWideCodePoint(codePoint) || IsSelectorAmbiguousWideCodePoint(codePoint) ? 2 : 1;
+        }
+
+        private static int GetSelectorCodePoint(string text, int index)
+        {
+            return GetSelectorCodePointLength(text, index) == 2
+                ? char.ConvertToUtf32(text, index)
+                : text[index];
+        }
+
+        private static bool IsSelectorWideCodePoint(int codePoint)
+        {
+            return (codePoint >= 0x1100 && codePoint <= 0x115F)
+                   || codePoint == 0x2329
+                   || codePoint == 0x232A
+                   || (codePoint >= 0x2E80 && codePoint <= 0xA4CF)
+                   || (codePoint >= 0xAC00 && codePoint <= 0xD7A3)
+                   || (codePoint >= 0xF900 && codePoint <= 0xFAFF)
+                   || (codePoint >= 0xFE10 && codePoint <= 0xFE19)
+                   || (codePoint >= 0xFE30 && codePoint <= 0xFE6F)
+                   || (codePoint >= 0xFF00 && codePoint <= 0xFF60)
+                   || (codePoint >= 0xFFE0 && codePoint <= 0xFFE6)
+                   || (codePoint >= 0x1F300 && codePoint <= 0x1FAFF)
+                   || (codePoint >= 0x20000 && codePoint <= 0x3FFFD);
+        }
+
+        private static bool IsSelectorAmbiguousWideCodePoint(int codePoint)
+        {
+            return (codePoint >= 0x2010 && codePoint <= 0x2016) // hyphen through double vertical line, includes em dash
+                   || (codePoint >= 0x2018 && codePoint <= 0x201F) // smart quotes
+                   || (codePoint >= 0x2020 && codePoint <= 0x2027) // dagger, bullet, ellipsis
+                   || (codePoint >= 0x2030 && codePoint <= 0x203E)
+                   || (codePoint >= 0x2190 && codePoint <= 0x21FF) // arrows
+                   || (codePoint >= 0x2200 && codePoint <= 0x22FF) // math symbols
+                   || (codePoint >= 0x2460 && codePoint <= 0x24FF)
+                   || (codePoint >= 0x2500 && codePoint <= 0x257F) // box drawing
+                   || (codePoint >= 0x25A0 && codePoint <= 0x25FF)
+                   || (codePoint >= 0x2600 && codePoint <= 0x27BF)
+                   || codePoint == 0x00A1
+                   || codePoint == 0x00A4
+                   || codePoint == 0x00A7
+                   || codePoint == 0x00A8
+                   || codePoint == 0x00AA
+                   || codePoint == 0x00AD
+                   || codePoint == 0x00AE
+                   || codePoint == 0x00B0
+                   || codePoint == 0x00B1
+                   || (codePoint >= 0x00B2 && codePoint <= 0x00B4)
+                   || codePoint == 0x00B6
+                   || codePoint == 0x00B7
+                   || codePoint == 0x00B8
+                   || codePoint == 0x00B9
+                   || codePoint == 0x00BA
+                   || (codePoint >= 0x00BC && codePoint <= 0x00BF)
+                   || codePoint == 0x00C6
+                   || codePoint == 0x00D0
+                   || codePoint == 0x00D7
+                   || codePoint == 0x00D8
+                   || (codePoint >= 0x00DE && codePoint <= 0x00E1)
+                   || codePoint == 0x00E6
+                   || (codePoint >= 0x00E8 && codePoint <= 0x00EA)
+                   || (codePoint >= 0x00EC && codePoint <= 0x00ED)
+                   || codePoint == 0x00F0
+                   || (codePoint >= 0x00F2 && codePoint <= 0x00F3)
+                   || (codePoint >= 0x00F7 && codePoint <= 0x00FA)
+                   || codePoint == 0x00FC
+                   || codePoint == 0x00FE
+                   || codePoint == 0x0101
+                   || codePoint == 0x0111
+                   || codePoint == 0x0113
+                   || codePoint == 0x011B
+                   || (codePoint >= 0x0126 && codePoint <= 0x0127)
+                   || codePoint == 0x012B
+                   || (codePoint >= 0x0131 && codePoint <= 0x0133)
+                   || codePoint == 0x0138
+                   || (codePoint >= 0x013F && codePoint <= 0x0142)
+                   || codePoint == 0x0144
+                   || (codePoint >= 0x0148 && codePoint <= 0x014B)
+                   || codePoint == 0x014D
+                   || (codePoint >= 0x0152 && codePoint <= 0x0153)
+                   || (codePoint >= 0x0166 && codePoint <= 0x0167)
+                   || codePoint == 0x016B
+                   || codePoint == 0x01CE
+                   || codePoint == 0x01D0
+                   || codePoint == 0x01D2
+                   || codePoint == 0x01D4
+                   || codePoint == 0x01D6
+                   || codePoint == 0x01D8
+                   || codePoint == 0x01DA
+                   || codePoint == 0x01DC
+                   || codePoint == 0x0251
+                   || codePoint == 0x0261
+                   || codePoint == 0x02C4
+                   || codePoint == 0x02C7
+                   || (codePoint >= 0x02C9 && codePoint <= 0x02CB)
+                   || codePoint == 0x02CD
+                   || codePoint == 0x02D0
+                   || (codePoint >= 0x02D8 && codePoint <= 0x02DB)
+                   || codePoint == 0x02DD
+                   || codePoint == 0x02DF
+                   || (codePoint >= 0x0391 && codePoint <= 0x03A9)
+                   || (codePoint >= 0x03B1 && codePoint <= 0x03C1)
+                   || (codePoint >= 0x03C3 && codePoint <= 0x03C9)
+                   || codePoint == 0x0401
+                   || (codePoint >= 0x0410 && codePoint <= 0x044F)
+                   || codePoint == 0x0451;
         }
 
 
