@@ -1625,6 +1625,9 @@ namespace WindowResizer.CLI.Commands
                     return false;
                 }
 
+                NormalizeWholeHiddenCache(targets, selectedIndex, highlightBackground,
+                    originalForeground, originalBackground);
+
                 cacheValid = true;
                 return true;
             }
@@ -1639,7 +1642,15 @@ namespace WindowResizer.CLI.Commands
 
                 WriteHiddenListRow(targets[targetIndex], targetIndex, selectedIndex, highlightBackground,
                     originalForeground, originalBackground);
-                return ReadHiddenCacheRows(SelectorHeaderLines + targetIndex, 1);
+
+                if (!ReadHiddenCacheRows(SelectorHeaderLines + targetIndex, 1))
+                {
+                    return false;
+                }
+
+                NormalizeHiddenCacheListRow(targets, targetIndex, selectedIndex, highlightBackground,
+                    originalForeground, originalBackground);
+                return true;
             }
 
             private void WriteHiddenTextRow(int row, string text, ConsoleColor foreground, ConsoleColor background)
@@ -1764,6 +1775,86 @@ namespace WindowResizer.CLI.Commands
 
                 Array.Copy(temp, 0, hiddenCache, startRow * hiddenWidth, temp.Length);
                 return true;
+            }
+
+            private void NormalizeWholeHiddenCache(List<WindowCmd.TargetWindow> targets, int selectedIndex,
+                ConsoleColor highlightBackground, ConsoleColor originalForeground, ConsoleColor originalBackground)
+            {
+                NormalizeHiddenCacheRow(0, BuildSelectorTextRow("Select a window/application:", hiddenWidth,
+                    originalForeground, originalBackground));
+                NormalizeHiddenCacheRow(1, BuildSelectorTextRow(
+                    "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc.",
+                    hiddenWidth, originalForeground, originalBackground));
+
+                for (var i = 0; i < targets.Count; i++)
+                {
+                    NormalizeHiddenCacheListRow(targets, i, selectedIndex, highlightBackground,
+                        originalForeground, originalBackground);
+                }
+            }
+
+            private void NormalizeHiddenCacheListRow(List<WindowCmd.TargetWindow> targets, int targetIndex, int selectedIndex,
+                ConsoleColor highlightBackground, ConsoleColor originalForeground, ConsoleColor originalBackground)
+            {
+                NormalizeHiddenCacheRow(SelectorHeaderLines + targetIndex,
+                    BuildSelectorListRow(targets, targetIndex, selectedIndex, hiddenWidth, highlightBackground,
+                        originalForeground, originalBackground));
+            }
+
+            private void NormalizeHiddenCacheRow(int hiddenRow, SelectorRowBuffer manualRow)
+            {
+                if (hiddenCache == null || manualRow == null || manualRow.Cells == null
+                    || hiddenRow < 0 || hiddenRow >= hiddenHeight)
+                {
+                    return;
+                }
+
+                var baseIndex = hiddenRow * hiddenWidth;
+                var width = Math.Min(hiddenWidth, manualRow.Cells.Length);
+                var hiddenHasText = false;
+
+                for (var i = 0; i < hiddenWidth; i++)
+                {
+                    var ch = hiddenCache[baseIndex + i].UnicodeChar;
+                    if (ch != '\0' && ch != ' ')
+                    {
+                        hiddenHasText = true;
+                        break;
+                    }
+                }
+
+                for (var i = 0; i < width; i++)
+                {
+                    var index = baseIndex + i;
+
+                    // The hidden buffer gives us the console-rendered character cells,
+                    // which fixes the old Unicode overlap problem.  Some classic
+                    // conhost combinations, however, can return invisible attributes
+                    // from a non-active screen buffer.  Keep the hidden-buffer
+                    // characters, but use the selector's known attributes.  If the
+                    // hidden row came back empty, fall back to the manual row text
+                    // rather than leaving the selector blank.
+                    if (!hiddenHasText || hiddenCache[index].UnicodeChar == '\0')
+                    {
+                        hiddenCache[index].UnicodeChar = manualRow.Cells[i].UnicodeChar;
+                    }
+
+                    if (hiddenCache[index].UnicodeChar == '\0')
+                    {
+                        hiddenCache[index].UnicodeChar = ' ';
+                    }
+
+                    hiddenCache[index].Attributes = manualRow.Cells[i].Attributes;
+                }
+
+                for (var i = width; i < hiddenWidth; i++)
+                {
+                    var index = baseIndex + i;
+                    if (hiddenCache[index].UnicodeChar == '\0')
+                    {
+                        hiddenCache[index].UnicodeChar = ' ';
+                    }
+                }
             }
 
             private bool TryWriteFullFrameFromHiddenCache(IntPtr outputHandle, int targetCount, int offset, int pageSize,
