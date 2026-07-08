@@ -115,13 +115,13 @@ namespace WindowResizer.CLI.Commands
             var originalCursorVisible = Console.CursorVisible;
             int originalInputMode;
             var mouseInputEnabled = TryPrepareSelectorMouseInput(out originalInputMode);
-            var usingAlternateScreen = PrepareSelectorScreen();
+            var renderState = new SelectorRenderState();
+            var usingAlternateScreen = PrepareSelectorScreen(renderState);
             var startTop = 0;
             var pageSize = GetSelectorPageSize();
             var highlightBackground = GetDarkInvertedConsoleColor(originalBackground);
             var lastConsoleWidth = GetSafeConsoleWidth();
             var lastConsoleHeight = GetSafeConsoleHeight();
-            var renderState = new SelectorRenderState();
 
             try
             {
@@ -177,7 +177,7 @@ namespace WindowResizer.CLI.Commands
             finally
             {
                 renderState.Dispose();
-                FinishSelectorScreen(usingAlternateScreen, originalCursorVisible);
+                FinishSelectorScreen(usingAlternateScreen, originalCursorVisible, renderState);
                 RestoreSelectorMouseInput(mouseInputEnabled, originalInputMode);
                 Console.ForegroundColor = originalForeground;
                 Console.BackgroundColor = originalBackground;
@@ -708,8 +708,18 @@ namespace WindowResizer.CLI.Commands
             }
         }
 
-        private static bool PrepareSelectorScreen()
+        private static bool PrepareSelectorScreen(SelectorRenderState renderState)
         {
+            // Prefer the same classic two-screen-buffer path as the successful
+            // Unicode demo: make a dedicated visible buffer active and keep its
+            // dwSize equal to the visible window.  That avoids conhost scrollback
+            // ghosting without relying on VT alternate-screen behavior.
+            if (renderState != null && renderState.ScreenSession.TryEnter())
+            {
+                TryClearSelectorScreen();
+                return false;
+            }
+
             var usingAlternateScreen = TryEnterAlternateScreen();
 
             // Use a full-screen selector area. When alternate screen support
@@ -720,11 +730,17 @@ namespace WindowResizer.CLI.Commands
             return usingAlternateScreen;
         }
 
-        private static void FinishSelectorScreen(bool usingAlternateScreen, bool originalCursorVisible)
+        private static void FinishSelectorScreen(bool usingAlternateScreen, bool originalCursorVisible,
+            SelectorRenderState renderState)
         {
             if (usingAlternateScreen)
             {
                 TryLeaveAlternateScreen(originalCursorVisible);
+            }
+
+            if (renderState != null)
+            {
+                renderState.ScreenSession.Dispose();
             }
         }
 
@@ -1444,7 +1460,7 @@ namespace WindowResizer.CLI.Commands
                 ConsoleColor originalForeground, ConsoleColor originalBackground, bool usingAlternateScreen,
                 SelectorRenderState renderState)
             {
-                if (!usingAlternateScreen || targets == null || targets.Count == 0 || width <= 0 || pageSize <= 0)
+                if (targets == null || targets.Count == 0 || width <= 0 || pageSize <= 0)
                 {
                     return false;
                 }
@@ -2124,6 +2140,7 @@ namespace WindowResizer.CLI.Commands
         private sealed class SelectorRenderState : IDisposable
         {
             public SelectorHiddenBufferRenderer HiddenRenderer { get; } = new SelectorHiddenBufferRenderer();
+            public SelectorScreenBufferSession ScreenSession { get; } = new SelectorScreenBufferSession();
 
             public bool IsInvalid { get; private set; } = true;
             public int LastSelectedIndex { get; private set; } = -1;
@@ -2154,6 +2171,124 @@ namespace WindowResizer.CLI.Commands
             public void Dispose()
             {
                 HiddenRenderer.Dispose();
+            }
+        }
+
+        private sealed class SelectorScreenBufferSession : IDisposable
+        {
+            private IntPtr originalOutputHandle = IntPtr.Zero;
+            private IntPtr visibleHandle = IntPtr.Zero;
+            private bool active;
+
+            public bool IsActive => active;
+
+            public bool TryEnter()
+            {
+                if (active)
+                {
+                    return true;
+                }
+
+                originalOutputHandle = GetStdHandle(StdOutputHandle);
+                if (originalOutputHandle == IntPtr.Zero || originalOutputHandle == new IntPtr(-1))
+                {
+                    return false;
+                }
+
+                CONSOLE_SCREEN_BUFFER_INFO originalInfo;
+                if (!GetConsoleScreenBufferInfo(originalOutputHandle, out originalInfo))
+                {
+                    return false;
+                }
+
+                var width = originalInfo.srWindow.Right - originalInfo.srWindow.Left + 1;
+                var height = originalInfo.srWindow.Bottom - originalInfo.srWindow.Top + 1;
+                if (width <= 0 || height <= 0 || width > short.MaxValue || height > short.MaxValue)
+                {
+                    return false;
+                }
+
+                visibleHandle = CreateConsoleScreenBuffer(GenericRead | GenericWrite, FileShareRead | FileShareWrite,
+                    IntPtr.Zero, ConsoleTextmodeBuffer, IntPtr.Zero);
+                if (visibleHandle == IntPtr.Zero || visibleHandle == new IntPtr(-1))
+                {
+                    visibleHandle = IntPtr.Zero;
+                    return false;
+                }
+
+                int mode;
+                if (GetConsoleMode(visibleHandle, out mode))
+                {
+                    SetConsoleMode(visibleHandle, mode & ~EnableWrapAtEolOutput);
+                }
+
+                if (!SetVisibleBufferToSize(width, height))
+                {
+                    Dispose();
+                    return false;
+                }
+
+                if (!SetConsoleActiveScreenBuffer(visibleHandle))
+                {
+                    Dispose();
+                    return false;
+                }
+
+                SetStdHandle(StdOutputHandle, visibleHandle);
+                active = true;
+                return true;
+            }
+
+            public void Dispose()
+            {
+                if (active && originalOutputHandle != IntPtr.Zero && originalOutputHandle != new IntPtr(-1))
+                {
+                    SetConsoleActiveScreenBuffer(originalOutputHandle);
+                    SetStdHandle(StdOutputHandle, originalOutputHandle);
+                }
+
+                active = false;
+
+                if (visibleHandle != IntPtr.Zero && visibleHandle != new IntPtr(-1))
+                {
+                    CloseHandle(visibleHandle);
+                }
+
+                visibleHandle = IntPtr.Zero;
+                originalOutputHandle = IntPtr.Zero;
+            }
+
+            private bool SetVisibleBufferToSize(int width, int height)
+            {
+                if (visibleHandle == IntPtr.Zero || visibleHandle == new IntPtr(-1)
+                    || width <= 0 || height <= 0 || width > short.MaxValue || height > short.MaxValue)
+                {
+                    return false;
+                }
+
+                // A newly created screen buffer may have a default window larger
+                // than the size we want.  Shrink its viewport first, then set an
+                // exact buffer size, then expand the viewport to the requested
+                // visible dimensions.  The buffer is not active yet, so this does
+                // not flash on screen.
+                var tinyWindow = new SMALL_RECT { Left = 0, Top = 0, Right = 0, Bottom = 0 };
+                SetConsoleWindowInfo(visibleHandle, true, ref tinyWindow);
+
+                var size = new COORD { X = (short)width, Y = (short)height };
+                if (!SetConsoleScreenBufferSize(visibleHandle, size))
+                {
+                    return false;
+                }
+
+                var window = new SMALL_RECT
+                {
+                    Left = 0,
+                    Top = 0,
+                    Right = (short)(width - 1),
+                    Bottom = (short)(height - 1)
+                };
+
+                return SetConsoleWindowInfo(visibleHandle, true, ref window);
             }
         }
 
@@ -2628,6 +2763,12 @@ namespace WindowResizer.CLI.Commands
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern IntPtr GetStdHandle(int nStdHandle);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetStdHandle(int nStdHandle, IntPtr hHandle);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetConsoleActiveScreenBuffer(IntPtr hConsoleOutput);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool GetConsoleMode(IntPtr hConsoleHandle, out int lpMode);
