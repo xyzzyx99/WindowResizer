@@ -1626,14 +1626,15 @@ namespace WindowResizer.CLI.Commands
                 ConsoleColor highlightBackground, ConsoleColor originalForeground, ConsoleColor originalBackground)
             {
                 var requiredHeight = Math.Max(1, SelectorHeaderLines + targets.Count);
+                var requiredWidth = GetRequiredHiddenWidth(targets, width);
                 var colorsChanged = cachedHighlightBackground != highlightBackground
                                     || cachedOriginalForeground != originalForeground
                                     || cachedOriginalBackground != originalBackground;
 
                 if (!cacheValid || hiddenHandle == IntPtr.Zero || hiddenHandle == new IntPtr(-1)
-                    || hiddenWidth != width || hiddenHeight != requiredHeight || colorsChanged)
+                    || hiddenWidth != requiredWidth || hiddenHeight != requiredHeight || colorsChanged)
                 {
-                    return RebuildHiddenCache(targets, selectedIndex, width, requiredHeight,
+                    return RebuildHiddenCache(targets, selectedIndex, requiredWidth, requiredHeight,
                         highlightBackground, originalForeground, originalBackground);
                 }
 
@@ -1662,6 +1663,68 @@ namespace WindowResizer.CLI.Commands
                 }
 
                 return true;
+            }
+
+            private static int GetRequiredHiddenWidth(List<WindowCmd.TargetWindow> targets, int visibleWidth)
+            {
+                var requiredWidth = Math.Max(1, visibleWidth);
+                requiredWidth = Math.Max(requiredWidth, GetSelectorTextWidth("Select a window/application:"));
+                requiredWidth = Math.Max(requiredWidth, GetSelectorTextWidth(
+                    "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc."));
+
+                if (targets != null)
+                {
+                    for (var i = 0; i < targets.Count; i++)
+                    {
+                        requiredWidth = Math.Max(requiredWidth, GetHiddenListRowTextWidth(targets[i]));
+                    }
+                }
+
+                // Leave a little right-side margin.  The hidden buffer is the
+                // rendered backing store, so it should be wide enough for the
+                // complete row before ReadConsoleOutput copies the CHAR_INFO
+                // cells.  If it is only as wide as the visible window, long CJK
+                // titles can be clipped/wrapped in the hidden buffer before the
+                // visible copy ever happens.
+                return Math.Min(short.MaxValue, Math.Max(1, requiredWidth + 8));
+            }
+
+            private static int GetHiddenListRowTextWidth(WindowCmd.TargetWindow target)
+            {
+                if (target == null)
+                {
+                    return 1;
+                }
+
+                var width = GetSelectorTextWidth("  ");
+                width += GetSelectorTextWidth(target.ProcessName ?? string.Empty);
+
+                if (target.ProcessId > 0 || target.IsTopForProcess)
+                {
+                    width += GetSelectorTextWidth(" [");
+
+                    if (target.ProcessId > 0)
+                    {
+                        width += GetSelectorTextWidth(target.ProcessId.ToString());
+
+                        if (target.IsTopForProcess)
+                        {
+                            width += GetSelectorTextWidth(" ");
+                        }
+                    }
+
+                    if (target.IsTopForProcess)
+                    {
+                        width += GetSelectorTextWidth("Top");
+                    }
+
+                    width += GetSelectorTextWidth("]");
+                }
+
+                width += GetSelectorTextWidth(" | ");
+                width += GetSelectorTextWidth(string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title);
+                width += GetSelectorTextWidth($" (0x{target.Handle.ToInt64():X})");
+                return width;
             }
 
             private bool RebuildHiddenCache(List<WindowCmd.TargetWindow> targets, int selectedIndex, int width, int height,
