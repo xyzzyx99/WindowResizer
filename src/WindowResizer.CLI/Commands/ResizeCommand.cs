@@ -105,85 +105,12 @@ namespace WindowResizer.CLI.Commands
 
         private static WindowCmd.TargetWindow SelectTargetWindow(List<WindowCmd.TargetWindow> targets, out bool canceled)
         {
-            canceled = false;
-
-            var selectedIndex = 0;
-            var offset = 0;
-            var originalForeground = Console.ForegroundColor;
-            var originalBackground = Console.BackgroundColor;
-            var originalCursorVisible = Console.CursorVisible;
-            int originalInputMode;
-            var mouseInputEnabled = TryPrepareSelectorMouseInput(out originalInputMode);
-            var renderState = new SelectorRenderState();
-            var usingAlternateScreen = PrepareSelectorScreen(renderState);
-            var startTop = 0;
-            var pageSize = GetSelectorPageSize();
-            var highlightBackground = GetDarkInvertedConsoleColor(originalBackground);
-            var lastConsoleWidth = GetSafeConsoleWidth();
-            var lastConsoleHeight = GetSafeConsoleHeight();
-
-            try
+            using (var selector = new DemoLikeScreenBufferSelector(targets))
             {
-                HideSelectorCursor(usingAlternateScreen);
-                while (true)
-                {
-                    pageSize = GetSelectorPageSize();
-                    RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
-                        highlightBackground, originalForeground, originalBackground, usingAlternateScreen, renderState);
-
-                    var key = ReadSelectorKey(targets, ref selectedIndex, ref offset, ref pageSize, startTop,
-                        highlightBackground, originalForeground, originalBackground, usingAlternateScreen, renderState,
-                        ref lastConsoleWidth, ref lastConsoleHeight);
-                    switch (key.Key)
-                    {
-                        case ConsoleKey.UpArrow:
-                            if (selectedIndex > 0)
-                            {
-                                selectedIndex--;
-                            }
-                            break;
-                        case ConsoleKey.DownArrow:
-                            if (selectedIndex < targets.Count - 1)
-                            {
-                                selectedIndex++;
-                            }
-                            break;
-                        case ConsoleKey.PageUp:
-                            selectedIndex = Math.Max(0, selectedIndex - pageSize);
-                            break;
-                        case ConsoleKey.PageDown:
-                            selectedIndex = Math.Min(targets.Count - 1, selectedIndex + pageSize);
-                            break;
-                        case ConsoleKey.Home:
-                            selectedIndex = 0;
-                            break;
-                        case ConsoleKey.End:
-                            selectedIndex = targets.Count - 1;
-                            break;
-                        case ConsoleKey.Enter:
-                            FinishTargetWindowSelector(startTop, pageSize, originalForeground, originalBackground);
-                            return targets[selectedIndex];
-                        case ConsoleKey.Escape:
-                            canceled = true;
-                            FinishTargetWindowSelector(startTop, pageSize, originalForeground, originalBackground);
-                            return null;
-                        default:
-                            JumpToProcessGroupByKey(targets, key, ref selectedIndex);
-                            break;
-                    }
-                }
-            }
-            finally
-            {
-                renderState.Dispose();
-                FinishSelectorScreen(usingAlternateScreen, originalCursorVisible, renderState);
-                RestoreSelectorMouseInput(mouseInputEnabled, originalInputMode);
-                Console.ForegroundColor = originalForeground;
-                Console.BackgroundColor = originalBackground;
-                TrySetConsoleCursorVisible(originalCursorVisible);
-                Console.CursorVisible = originalCursorVisible;
+                return selector.Run(out canceled);
             }
         }
+
 
         private static ConsoleKeyInfo ReadSelectorKey(List<WindowCmd.TargetWindow> targets, ref int selectedIndex, ref int offset,
             ref int pageSize, int startTop, ConsoleColor highlightBackground,
@@ -2242,6 +2169,760 @@ namespace WindowResizer.CLI.Commands
                 }
 
                 return true;
+            }
+        }
+
+
+        private sealed class DemoLikeScreenBufferSelector : IDisposable
+        {
+            private readonly List<WindowCmd.TargetWindow> targets;
+            private readonly ConsoleColor originalForeground;
+            private readonly ConsoleColor originalBackground;
+            private readonly ConsoleColor highlightBackground;
+            private readonly ConsoleColor processForeground = ConsoleColor.Green;
+            private readonly ConsoleColor mutedForeground = ConsoleColor.DarkGray;
+            private readonly ConsoleColor topForeground = ConsoleColor.Green;
+            private readonly ConsoleColor titleForeground;
+
+            private IntPtr originalOutputHandle;
+            private IntPtr visibleHandle;
+            private IntPtr hiddenHandle;
+            private IntPtr inputHandle;
+            private int originalInputMode;
+            private bool inputModeChanged;
+            private ConsoleCursorInfo originalCursorInfo;
+            private bool haveOriginalCursorInfo;
+            private bool active;
+
+            private int visibleWidth;
+            private int visibleHeight;
+            private int lastVisibleWidth = -1;
+            private int lastVisibleHeight = -1;
+            private int hiddenWidth;
+            private int hiddenHeight;
+            private CHAR_INFO[] hiddenCache;
+
+            private int selectedIndex;
+            private int offset;
+            private int horizontalOffset;
+            private bool cacheDirty = true;
+            private bool frameDirty = true;
+
+            public DemoLikeScreenBufferSelector(List<WindowCmd.TargetWindow> targets)
+            {
+                this.targets = targets ?? new List<WindowCmd.TargetWindow>();
+                originalForeground = Console.ForegroundColor;
+                originalBackground = Console.BackgroundColor;
+                highlightBackground = GetDarkInvertedConsoleColor(originalBackground);
+                titleForeground = originalForeground;
+            }
+
+            public WindowCmd.TargetWindow Run(out bool canceled)
+            {
+                canceled = false;
+
+                if (targets.Count == 0)
+                {
+                    canceled = true;
+                    return null;
+                }
+
+                if (!TryEnter())
+                {
+                    canceled = true;
+                    Output.Error("Unable to initialize the interactive console selector.");
+                    return null;
+                }
+
+                try
+                {
+                    while (true)
+                    {
+                        PollGeometryAndRenderIfNeeded();
+
+                        INPUT_RECORD record;
+                        if (!TryReadInputRecord(out record))
+                        {
+                            Thread.Sleep(SelectorResizePollMilliseconds);
+                            continue;
+                        }
+
+                        if (record.EventType == MouseEvent)
+                        {
+                            WindowCmd.TargetWindow mouseResult;
+                            if (TryHandleMouse(record.Event.MouseEvent, out mouseResult, ref canceled))
+                            {
+                                return mouseResult;
+                            }
+
+                            continue;
+                        }
+
+                        if (record.EventType != KeyEvent || !record.Event.KeyEvent.bKeyDown)
+                        {
+                            continue;
+                        }
+
+                        var key = CreateConsoleKeyInfo(record.Event.KeyEvent);
+                        switch (key.Key)
+                        {
+                            case ConsoleKey.UpArrow:
+                                MoveSelection(-1);
+                                break;
+                            case ConsoleKey.DownArrow:
+                                MoveSelection(1);
+                                break;
+                            case ConsoleKey.PageUp:
+                                MoveSelection(-GetPageSize());
+                                break;
+                            case ConsoleKey.PageDown:
+                                MoveSelection(GetPageSize());
+                                break;
+                            case ConsoleKey.Home:
+                                if (key.Modifiers.HasFlag(ConsoleModifiers.Control))
+                                {
+                                    horizontalOffset = 0;
+                                    frameDirty = true;
+                                }
+                                else
+                                {
+                                    SetSelection(0);
+                                }
+                                break;
+                            case ConsoleKey.End:
+                                if (key.Modifiers.HasFlag(ConsoleModifiers.Control))
+                                {
+                                    horizontalOffset = Math.Max(0, hiddenWidth - visibleWidth);
+                                    frameDirty = true;
+                                }
+                                else
+                                {
+                                    SetSelection(targets.Count - 1);
+                                }
+                                break;
+                            case ConsoleKey.LeftArrow:
+                                if (horizontalOffset > 0)
+                                {
+                                    horizontalOffset--;
+                                    frameDirty = true;
+                                }
+                                break;
+                            case ConsoleKey.RightArrow:
+                                if (horizontalOffset < Math.Max(0, hiddenWidth - visibleWidth))
+                                {
+                                    horizontalOffset++;
+                                    frameDirty = true;
+                                }
+                                break;
+                            case ConsoleKey.Enter:
+                                return targets[selectedIndex];
+                            case ConsoleKey.Escape:
+                                canceled = true;
+                                return null;
+                            default:
+                                var oldSelectedIndex = selectedIndex;
+                                JumpToProcessGroupByKey(targets, key, ref selectedIndex);
+                                if (selectedIndex != oldSelectedIndex)
+                                {
+                                    cacheDirty = true;
+                                    frameDirty = true;
+                                }
+                                break;
+                        }
+                    }
+                }
+                finally
+                {
+                    Dispose();
+                }
+            }
+
+            public void Dispose()
+            {
+                if (active && originalOutputHandle != IntPtr.Zero && originalOutputHandle != new IntPtr(-1))
+                {
+                    SetConsoleActiveScreenBuffer(originalOutputHandle);
+                    SetStdHandle(StdOutputHandle, originalOutputHandle);
+                }
+
+                active = false;
+
+                if (haveOriginalCursorInfo && originalOutputHandle != IntPtr.Zero && originalOutputHandle != new IntPtr(-1))
+                {
+                    SetConsoleCursorInfo(originalOutputHandle, ref originalCursorInfo);
+                }
+
+                if (inputModeChanged && inputHandle != IntPtr.Zero && inputHandle != new IntPtr(-1))
+                {
+                    SetConsoleMode(inputHandle, originalInputMode);
+                }
+
+                if (visibleHandle != IntPtr.Zero && visibleHandle != new IntPtr(-1))
+                {
+                    CloseHandle(visibleHandle);
+                    visibleHandle = IntPtr.Zero;
+                }
+
+                if (hiddenHandle != IntPtr.Zero && hiddenHandle != new IntPtr(-1))
+                {
+                    CloseHandle(hiddenHandle);
+                    hiddenHandle = IntPtr.Zero;
+                }
+
+                TrySetConsoleCursorVisible(true);
+            }
+
+            private bool TryEnter()
+            {
+                originalOutputHandle = GetStdHandle(StdOutputHandle);
+                inputHandle = GetStdHandle(StdInputHandle);
+                if (originalOutputHandle == IntPtr.Zero || originalOutputHandle == new IntPtr(-1)
+                    || inputHandle == IntPtr.Zero || inputHandle == new IntPtr(-1))
+                {
+                    return false;
+                }
+
+                haveOriginalCursorInfo = GetConsoleCursorInfo(originalOutputHandle, out originalCursorInfo);
+
+                if (GetConsoleMode(inputHandle, out originalInputMode))
+                {
+                    var newInputMode = originalInputMode;
+                    newInputMode |= EnableExtendedFlags;
+                    newInputMode |= EnableMouseInput;
+                    newInputMode |= EnableWindowInput;
+                    newInputMode &= ~EnableQuickEditMode;
+                    inputModeChanged = SetConsoleMode(inputHandle, newInputMode);
+                }
+
+                visibleHandle = CreateConsoleScreenBuffer(GenericRead | GenericWrite,
+                    FileShareRead | FileShareWrite, IntPtr.Zero, ConsoleTextmodeBuffer, IntPtr.Zero);
+                hiddenHandle = CreateConsoleScreenBuffer(GenericRead | GenericWrite,
+                    FileShareRead | FileShareWrite, IntPtr.Zero, ConsoleTextmodeBuffer, IntPtr.Zero);
+
+                if (visibleHandle == IntPtr.Zero || visibleHandle == new IntPtr(-1)
+                    || hiddenHandle == IntPtr.Zero || hiddenHandle == new IntPtr(-1))
+                {
+                    return false;
+                }
+
+                DisableWrap(visibleHandle);
+                DisableWrap(hiddenHandle);
+
+                if (!SetConsoleActiveScreenBuffer(visibleHandle))
+                {
+                    return false;
+                }
+
+                SetStdHandle(StdOutputHandle, visibleHandle);
+                active = true;
+                HideCursor(visibleHandle);
+                NormalizeVisibleBufferToWindow();
+                hiddenWidth = GetRequiredHiddenWidth();
+                hiddenHeight = GetRequiredHiddenHeight();
+                RebuildHiddenCache();
+                frameDirty = true;
+                return true;
+            }
+
+            private void DisableWrap(IntPtr handle)
+            {
+                int mode;
+                if (GetConsoleMode(handle, out mode))
+                {
+                    SetConsoleMode(handle, mode & ~EnableWrapAtEolOutput);
+                }
+            }
+
+            private void PollGeometryAndRenderIfNeeded()
+            {
+                if (NormalizeVisibleBufferToWindow())
+                {
+                    if (visibleWidth != lastVisibleWidth || visibleHeight != lastVisibleHeight)
+                    {
+                        lastVisibleWidth = visibleWidth;
+                        lastVisibleHeight = visibleHeight;
+
+                        var requiredWidth = GetRequiredHiddenWidth();
+                        var requiredHeight = GetRequiredHiddenHeight();
+                        if (requiredWidth != hiddenWidth || requiredHeight != hiddenHeight)
+                        {
+                            hiddenWidth = requiredWidth;
+                            hiddenHeight = requiredHeight;
+                            cacheDirty = true;
+                        }
+
+                        EnsureSelectionVisible();
+                        frameDirty = true;
+                    }
+                }
+
+                if (cacheDirty)
+                {
+                    RebuildHiddenCache();
+                    cacheDirty = false;
+                    frameDirty = true;
+                }
+
+                if (frameDirty)
+                {
+                    RenderVisibleFrame();
+                    frameDirty = false;
+                }
+
+                HideCursor(visibleHandle);
+            }
+
+            private bool TryReadInputRecord(out INPUT_RECORD record)
+            {
+                record = default(INPUT_RECORD);
+
+                uint eventCount;
+                if (!GetNumberOfConsoleInputEvents(inputHandle, out eventCount) || eventCount == 0)
+                {
+                    return false;
+                }
+
+                uint recordsRead;
+                if (!ReadConsoleInput(inputHandle, out record, 1, out recordsRead) || recordsRead == 0)
+                {
+                    return false;
+                }
+
+                return true;
+            }
+
+            private bool TryHandleMouse(MOUSE_EVENT_RECORD mouseEvent, out WindowCmd.TargetWindow result, ref bool canceled)
+            {
+                result = null;
+
+                if (mouseEvent.dwEventFlags == MouseWheeled)
+                {
+                    var wheelDelta = unchecked((short)((mouseEvent.dwButtonState >> 16) & 0xffff));
+                    if (wheelDelta != 0)
+                    {
+                        var steps = Math.Max(1, Math.Abs(wheelDelta) / WheelDelta);
+                        MoveSelection(wheelDelta > 0 ? -steps : steps);
+                    }
+
+                    return false;
+                }
+
+                var leftButtonDown = (mouseEvent.dwButtonState & LeftMostButtonPressed) != 0;
+                if (!leftButtonDown || (mouseEvent.dwEventFlags != 0 && mouseEvent.dwEventFlags != DoubleClick))
+                {
+                    return false;
+                }
+
+                var listRow = mouseEvent.dwMousePosition.Y - SelectorHeaderLines;
+                if (listRow < 0 || listRow >= GetPageSize())
+                {
+                    return false;
+                }
+
+                var targetIndex = offset + listRow;
+                if (targetIndex < 0 || targetIndex >= targets.Count)
+                {
+                    return false;
+                }
+
+                SetSelection(targetIndex);
+
+                if (mouseEvent.dwEventFlags == DoubleClick)
+                {
+                    result = targets[selectedIndex];
+                    canceled = false;
+                    return true;
+                }
+
+                return false;
+            }
+
+            private void MoveSelection(int delta)
+            {
+                SetSelection(selectedIndex + delta);
+            }
+
+            private void SetSelection(int index)
+            {
+                var newIndex = Clamp(index, 0, targets.Count - 1);
+                if (newIndex == selectedIndex)
+                {
+                    return;
+                }
+
+                selectedIndex = newIndex;
+                EnsureSelectionVisible();
+                cacheDirty = true;
+                frameDirty = true;
+            }
+
+            private void EnsureSelectionVisible()
+            {
+                var pageSize = GetPageSize();
+                if (pageSize <= 0)
+                {
+                    offset = 0;
+                    return;
+                }
+
+                if (selectedIndex < offset)
+                {
+                    offset = selectedIndex;
+                }
+                else if (selectedIndex >= offset + pageSize)
+                {
+                    offset = selectedIndex - pageSize + 1;
+                }
+
+                offset = Clamp(offset, 0, Math.Max(0, targets.Count - pageSize));
+            }
+
+            private int GetPageSize()
+            {
+                return Math.Max(1, visibleHeight - SelectorHeaderLines - SelectorFooterLines);
+            }
+
+            private bool NormalizeVisibleBufferToWindow()
+            {
+                CONSOLE_SCREEN_BUFFER_INFO info;
+                if (!GetConsoleScreenBufferInfo(visibleHandle, out info))
+                {
+                    return false;
+                }
+
+                var width = info.srWindow.Right - info.srWindow.Left + 1;
+                var height = info.srWindow.Bottom - info.srWindow.Top + 1;
+                if (width <= 0 || height <= 0)
+                {
+                    return false;
+                }
+
+                if (info.dwSize.X < width || info.dwSize.Y < height)
+                {
+                    var grow = new COORD
+                    {
+                        X = (short)Math.Max(info.dwSize.X, width),
+                        Y = (short)Math.Max(info.dwSize.Y, height)
+                    };
+                    SetConsoleScreenBufferSize(visibleHandle, grow);
+                }
+
+                var window = new SMALL_RECT
+                {
+                    Left = 0,
+                    Top = 0,
+                    Right = (short)(width - 1),
+                    Bottom = (short)(height - 1)
+                };
+                SetConsoleWindowInfo(visibleHandle, true, ref window);
+
+                var exact = new COORD { X = (short)width, Y = (short)height };
+                SetConsoleScreenBufferSize(visibleHandle, exact);
+
+                CONSOLE_SCREEN_BUFFER_INFO after;
+                if (!GetConsoleScreenBufferInfo(visibleHandle, out after))
+                {
+                    return false;
+                }
+
+                visibleWidth = after.srWindow.Right - after.srWindow.Left + 1;
+                visibleHeight = after.srWindow.Bottom - after.srWindow.Top + 1;
+                return visibleWidth > 0 && visibleHeight > 0;
+            }
+
+            private int GetRequiredHiddenWidth()
+            {
+                var requiredWidth = Math.Max(1, visibleWidth);
+                requiredWidth = Math.Max(requiredWidth, GetSelectorTextWidth("Select a window/application:"));
+                requiredWidth = Math.Max(requiredWidth,
+                    GetSelectorTextWidth("Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc."));
+
+                foreach (var target in targets)
+                {
+                    requiredWidth = Math.Max(requiredWidth, GetSelectorTextWidth(BuildPlainListRow(target)) + 8);
+                }
+
+                return Clamp(requiredWidth, 1, short.MaxValue - 1);
+            }
+
+            private int GetRequiredHiddenHeight()
+            {
+                return Clamp(Math.Max(visibleHeight, SelectorHeaderLines + targets.Count), 1, short.MaxValue - 1);
+            }
+
+            private void RebuildHiddenCache()
+            {
+                EnsureHiddenBufferGeometry();
+                ClearHiddenBuffer();
+
+                WriteHiddenTextRow(0, "Select a window/application:", originalForeground, originalBackground);
+                WriteHiddenTextRow(1,
+                    "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc.",
+                    originalForeground, originalBackground);
+
+                for (var i = 0; i < targets.Count; i++)
+                {
+                    WriteHiddenListRow(i);
+                }
+
+                ReadHiddenCache();
+            }
+
+            private void EnsureHiddenBufferGeometry()
+            {
+                var tinyWindow = new SMALL_RECT { Left = 0, Top = 0, Right = 0, Bottom = 0 };
+                SetConsoleWindowInfo(hiddenHandle, true, ref tinyWindow);
+
+                var size = new COORD { X = (short)hiddenWidth, Y = (short)hiddenHeight };
+                SetConsoleScreenBufferSize(hiddenHandle, size);
+
+                var window = new SMALL_RECT
+                {
+                    Left = 0,
+                    Top = 0,
+                    Right = (short)(Math.Min(hiddenWidth, Math.Max(1, visibleWidth)) - 1),
+                    Bottom = (short)(Math.Min(hiddenHeight, Math.Max(1, visibleHeight)) - 1)
+                };
+                SetConsoleWindowInfo(hiddenHandle, true, ref window);
+            }
+
+            private void ClearHiddenBuffer()
+            {
+                var cells = (uint)Math.Max(1, hiddenWidth * hiddenHeight);
+                uint written;
+                var origin = new COORD { X = 0, Y = 0 };
+                var attribute = (ushort)GetSelectorAttribute(originalForeground, originalBackground);
+                FillConsoleOutputCharacter(hiddenHandle, ' ', cells, origin, out written);
+                FillConsoleOutputAttribute(hiddenHandle, attribute, cells, origin, out written);
+            }
+
+            private void WriteHiddenTextRow(int row, string text, ConsoleColor foreground, ConsoleColor background)
+            {
+                ClearHiddenRow(row, foreground, background);
+                SetHiddenCursor(0, row);
+                WriteHiddenSegment(text, foreground, background);
+            }
+
+            private void WriteHiddenListRow(int index)
+            {
+                var target = targets[index];
+                var selected = index == selectedIndex;
+                var row = SelectorHeaderLines + index;
+                var background = selected ? highlightBackground : originalBackground;
+                var processColor = selected ? originalForeground : processForeground;
+                var mutedColor = selected ? originalForeground : mutedForeground;
+                var topColor = selected ? originalForeground : topForeground;
+                var titleColor = originalForeground;
+                var title = string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title;
+
+                ClearHiddenRow(row, originalForeground, background);
+                SetHiddenCursor(0, row);
+                WriteHiddenSegment(selected ? "> " : "  ", titleColor, background);
+                WriteHiddenSegment(target.ProcessName ?? string.Empty, processColor, background);
+                WriteHiddenProcessInfo(target, selected, processColor, mutedColor, topColor, background);
+                WriteHiddenSegment(" | ", mutedColor, background);
+                WriteHiddenSegment(title, titleColor, background);
+                WriteHiddenSegment($" (0x{target.Handle.ToInt64():X})", mutedColor, background);
+            }
+
+            private void WriteHiddenProcessInfo(WindowCmd.TargetWindow target, bool selected,
+                ConsoleColor processColor, ConsoleColor mutedColor, ConsoleColor topColor, ConsoleColor background)
+            {
+                WriteHiddenSegment(" [", mutedColor, background);
+
+                if (target.ProcessId > 0)
+                {
+                    var pidColor = selected ? processColor : mutedColor;
+                    WriteHiddenSegment(target.ProcessId.ToString(CultureInfo.InvariantCulture), pidColor, background);
+
+                    if (target.IsTopForProcess)
+                    {
+                        WriteHiddenSegment(" ", mutedColor, background);
+                    }
+                }
+
+                if (target.IsTopForProcess)
+                {
+                    WriteHiddenSegment("Top", topColor, background);
+                }
+
+                WriteHiddenSegment("]", mutedColor, background);
+            }
+
+            private void ClearHiddenRow(int row, ConsoleColor foreground, ConsoleColor background)
+            {
+                if (row < 0 || row >= hiddenHeight)
+                {
+                    return;
+                }
+
+                var coord = new COORD { X = 0, Y = (short)row };
+                var attribute = (ushort)GetSelectorAttribute(foreground, background);
+                uint written;
+                FillConsoleOutputCharacter(hiddenHandle, ' ', (uint)hiddenWidth, coord, out written);
+                FillConsoleOutputAttribute(hiddenHandle, attribute, (uint)hiddenWidth, coord, out written);
+            }
+
+            private void SetHiddenCursor(int left, int top)
+            {
+                SetConsoleCursorPosition(hiddenHandle, new COORD { X = (short)left, Y = (short)top });
+            }
+
+            private void WriteHiddenSegment(string text, ConsoleColor foreground, ConsoleColor background)
+            {
+                if (string.IsNullOrEmpty(text))
+                {
+                    return;
+                }
+
+                SetConsoleTextAttribute(hiddenHandle, (ushort)GetSelectorAttribute(foreground, background));
+                uint written;
+                WriteConsole(hiddenHandle, text, (uint)text.Length, out written, IntPtr.Zero);
+            }
+
+            private void ReadHiddenCache()
+            {
+                hiddenCache = new CHAR_INFO[hiddenWidth * hiddenHeight];
+                var bufferSize = new COORD { X = (short)hiddenWidth, Y = (short)hiddenHeight };
+                var bufferCoord = new COORD { X = 0, Y = 0 };
+                var readRegion = new SMALL_RECT
+                {
+                    Left = 0,
+                    Top = 0,
+                    Right = (short)(hiddenWidth - 1),
+                    Bottom = (short)(hiddenHeight - 1)
+                };
+                ReadConsoleOutput(hiddenHandle, hiddenCache, bufferSize, bufferCoord, ref readRegion);
+            }
+
+            private void RenderVisibleFrame()
+            {
+                if (visibleWidth <= 0 || visibleHeight <= 0 || hiddenCache == null)
+                {
+                    return;
+                }
+
+                EnsureSelectionVisible();
+                horizontalOffset = Clamp(horizontalOffset, 0, Math.Max(0, hiddenWidth - visibleWidth));
+
+                var frame = new CHAR_INFO[visibleWidth * visibleHeight];
+                var blankAttribute = GetSelectorAttribute(originalForeground, originalBackground);
+                for (var i = 0; i < frame.Length; i++)
+                {
+                    frame[i].UnicodeChar = ' ';
+                    frame[i].Attributes = blankAttribute;
+                }
+
+                CopyHiddenRowToFrame(0, frame, 0, 0);
+                CopyHiddenRowToFrame(1, frame, 1, 0);
+
+                var pageSize = GetPageSize();
+                for (var i = 0; i < pageSize; i++)
+                {
+                    var targetIndex = offset + i;
+                    if (targetIndex < targets.Count)
+                    {
+                        CopyHiddenRowToFrame(SelectorHeaderLines + targetIndex, frame,
+                            SelectorHeaderLines + i, horizontalOffset);
+                    }
+                }
+
+                var visibleCount = Math.Min(pageSize, Math.Max(0, targets.Count - offset));
+                WriteFooterToFrame(frame, visibleCount);
+
+                var bufferSize = new COORD { X = (short)visibleWidth, Y = (short)visibleHeight };
+                var bufferCoord = new COORD { X = 0, Y = 0 };
+                var writeRegion = new SMALL_RECT
+                {
+                    Left = 0,
+                    Top = 0,
+                    Right = (short)(visibleWidth - 1),
+                    Bottom = (short)(visibleHeight - 1)
+                };
+
+                WriteConsoleOutput(visibleHandle, frame, bufferSize, bufferCoord, ref writeRegion);
+            }
+
+            private void CopyHiddenRowToFrame(int hiddenRow, CHAR_INFO[] frame, int frameRow, int sourceLeft)
+            {
+                if (hiddenRow < 0 || hiddenRow >= hiddenHeight || frameRow < 0 || frameRow >= visibleHeight)
+                {
+                    return;
+                }
+
+                for (var x = 0; x < visibleWidth; x++)
+                {
+                    var sourceX = sourceLeft + x;
+                    if (sourceX < 0 || sourceX >= hiddenWidth)
+                    {
+                        continue;
+                    }
+
+                    frame[frameRow * visibleWidth + x] = hiddenCache[hiddenRow * hiddenWidth + sourceX];
+                }
+            }
+
+            private void WriteFooterToFrame(CHAR_INFO[] frame, int visibleCount)
+            {
+                if (visibleHeight <= 0)
+                {
+                    return;
+                }
+
+                var footer = targets.Count > visibleCount
+                    ? $"Showing {offset + 1}-{offset + visibleCount} of {targets.Count}.  Left/Right scroll title."
+                    : $"Showing {targets.Count} window(s).  Left/Right scroll title.";
+
+                if (horizontalOffset > 0)
+                {
+                    footer += $"  X={horizontalOffset}.";
+                }
+
+                var row = visibleHeight - 1;
+                var attribute = GetSelectorAttribute(originalForeground, originalBackground);
+                for (var x = 0; x < visibleWidth; x++)
+                {
+                    frame[row * visibleWidth + x].UnicodeChar = x < footer.Length ? footer[x] : ' ';
+                    frame[row * visibleWidth + x].Attributes = attribute;
+                }
+            }
+
+            private string BuildPlainListRow(WindowCmd.TargetWindow target)
+            {
+                var title = string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title;
+                var pid = target.ProcessId > 0 ? target.ProcessId.ToString(CultureInfo.InvariantCulture) : string.Empty;
+                var top = target.IsTopForProcess ? (pid.Length > 0 ? " Top" : "Top") : string.Empty;
+                return $"> {target.ProcessName} [{pid}{top}] | {title} (0x{target.Handle.ToInt64():X})";
+            }
+
+            private static int Clamp(int value, int minimum, int maximum)
+            {
+                if (maximum < minimum)
+                {
+                    return minimum;
+                }
+
+                if (value < minimum)
+                {
+                    return minimum;
+                }
+
+                if (value > maximum)
+                {
+                    return maximum;
+                }
+
+                return value;
+            }
+
+            private static void HideCursor(IntPtr handle)
+            {
+                ConsoleCursorInfo cursorInfo;
+                if (GetConsoleCursorInfo(handle, out cursorInfo))
+                {
+                    cursorInfo.Visible = false;
+                    SetConsoleCursorInfo(handle, ref cursorInfo);
+                }
             }
         }
 
