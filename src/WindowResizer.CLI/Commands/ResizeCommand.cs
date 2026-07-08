@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.CommandLine;
@@ -105,9 +105,97 @@ namespace WindowResizer.CLI.Commands
 
         private static WindowCmd.TargetWindow SelectTargetWindow(List<WindowCmd.TargetWindow> targets, out bool canceled)
         {
+            WindowCmd.TargetWindow nativeSelectedWindow;
+            if (NativeConsoleSelector.TrySelectTarget(targets, out nativeSelectedWindow, out canceled))
+            {
+                return nativeSelectedWindow;
+            }
+
             using (var selector = new DemoLikeScreenBufferSelector(targets))
             {
                 return selector.Run(out canceled);
+            }
+        }
+
+        private static class NativeConsoleSelector
+        {
+            [DllImport("WindowResizer.Selector.Native.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, EntryPoint = "SelectWindowFromRows")]
+            private static extern int SelectWindowFromRows(string rowsText, int initialIndex, out int selectedIndex);
+
+            public static bool TrySelectTarget(List<WindowCmd.TargetWindow> targets, out WindowCmd.TargetWindow selectedWindow, out bool canceled)
+            {
+                selectedWindow = null;
+                canceled = false;
+
+                if (targets == null || targets.Count == 0)
+                {
+                    return false;
+                }
+
+                try
+                {
+                    var rows = string.Join("\n", targets.Select(FormatNativeSelectorRow));
+                    int selectedIndex;
+                    var result = SelectWindowFromRows(rows, 0, out selectedIndex);
+
+                    if (result == 0)
+                    {
+                        canceled = true;
+                        return true;
+                    }
+
+                    if (result == 1 && selectedIndex >= 0 && selectedIndex < targets.Count)
+                    {
+                        selectedWindow = targets[selectedIndex];
+                        return true;
+                    }
+
+                    Output.Error($"Native selector failed with code {result}; falling back to managed selector.");
+                    return false;
+                }
+                catch (DllNotFoundException)
+                {
+                    return false;
+                }
+                catch (EntryPointNotFoundException)
+                {
+                    return false;
+                }
+                catch (BadImageFormatException ex)
+                {
+                    Output.Error($"Native selector DLL has the wrong architecture: {ex.Message}");
+                    return false;
+                }
+            }
+
+            private static string FormatNativeSelectorRow(WindowCmd.TargetWindow target)
+            {
+                var title = string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title;
+                var processInfo = new StringBuilder();
+
+                if (target.ProcessId > 0 || target.IsTopForProcess)
+                {
+                    processInfo.Append(" [");
+
+                    if (target.ProcessId > 0)
+                    {
+                        processInfo.Append(target.ProcessId.ToString(CultureInfo.InvariantCulture));
+
+                        if (target.IsTopForProcess)
+                        {
+                            processInfo.Append(' ');
+                        }
+                    }
+
+                    if (target.IsTopForProcess)
+                    {
+                        processInfo.Append("Top");
+                    }
+
+                    processInfo.Append(']');
+                }
+
+                return $"{target.ProcessName}{processInfo} | {title} (0x{target.Handle.ToInt64():X})";
             }
         }
 
