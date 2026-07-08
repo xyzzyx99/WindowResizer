@@ -23,11 +23,14 @@ $nativeOutput = '.\publish\WindowResizer.CLI\WindowResizer.Selector.Native.dll'
 $nativeObj = '.\publish\WindowResizer.CLI\NativeSelector.obj'
 if (Test-Path $nativeSource) {
     Write-Host '>> building native selector...' -ForegroundColor Green
-    & cl.exe /nologo /LD /EHsc /utf-8 /O2 /DUNICODE /D_UNICODE /DNOMINMAX /Fo:$nativeObj $nativeSource /Fe:$nativeOutput
+    & cl.exe /nologo /LD /EHsc /std:c++17 /utf-8 /O2 /DUNICODE /D_UNICODE /DNOMINMAX /Fo:$nativeObj $nativeSource /Fe:$nativeOutput user32.lib kernel32.lib
     if ($LASTEXITCODE -ne 0) { throw 'native selector build failed.' }
     Remove-Item .\publish\WindowResizer.CLI\NativeSelector.obj -ErrorAction SilentlyContinue
     Remove-Item .\publish\WindowResizer.CLI\WindowResizer.Selector.Native.exp -ErrorAction SilentlyContinue
     Remove-Item .\publish\WindowResizer.CLI\WindowResizer.Selector.Native.lib -ErrorAction SilentlyContinue
+}
+else {
+    throw "native selector source not found: $nativeSource"
 }
 
 # release

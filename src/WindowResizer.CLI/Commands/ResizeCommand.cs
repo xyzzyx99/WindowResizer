@@ -111,6 +111,8 @@ namespace WindowResizer.CLI.Commands
                 return nativeSelectedWindow;
             }
 
+            Output.Error("NATIVE SELECTOR DIAGNOSTIC: using managed C# selector fallback.");
+
             using (var selector = new DemoLikeScreenBufferSelector(targets))
             {
                 return selector.Run(out canceled);
@@ -174,22 +176,27 @@ namespace WindowResizer.CLI.Commands
                         return true;
                     }
 
-                    Output.Error($"Native selector failed with code {result}; falling back to managed selector.");
+                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector returned {result}, selectedIndex={selectedIndex}; falling back to managed selector.");
                     return false;
                 }
                 catch (DllNotFoundException ex)
                 {
-                    Output.Error($"Native selector DLL not found: {ex.Message}");
+                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: WindowResizer.Selector.Native.dll was not loaded: {ex.Message}");
                     return false;
                 }
                 catch (EntryPointNotFoundException ex)
                 {
-                    Output.Error($"Native selector entry point not found: {ex.Message}");
+                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: SelectWindowFromRows was not exported: {ex.Message}");
                     return false;
                 }
                 catch (BadImageFormatException ex)
                 {
-                    Output.Error($"Native selector DLL has the wrong architecture: {ex.Message}");
+                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector DLL has the wrong architecture: {ex.Message}");
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector call failed with {ex.GetType().Name}: {ex.Message}");
                     return false;
                 }
             }
