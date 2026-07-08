@@ -113,6 +113,13 @@ namespace WindowResizer.CLI.Commands
 
             Output.Error("NATIVE SELECTOR DIAGNOSTIC: using managed C# selector fallback.");
 
+            Output.Error("NATIVE SELECTOR DIAGNOSTIC: native selector returned false; using managed C# selector fallback.");
+            Console.Error.WriteLine("NATIVE SELECTOR DIAGNOSTIC: press any key to continue into the managed C# selector...");
+            if (!Console.IsInputRedirected)
+            {
+                Console.ReadKey(true);
+            }
+
             using (var selector = new DemoLikeScreenBufferSelector(targets))
             {
                 return selector.Run(out canceled);
@@ -181,18 +188,36 @@ namespace WindowResizer.CLI.Commands
                 }
                 catch (DllNotFoundException ex)
                 {
-                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: WindowResizer.Selector.Native.dll was not loaded: {ex.Message}");
-                    return false;
+                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector DLL not found: {ex.Message}");
+                    canceled = true;
+                    Console.Error.WriteLine("NATIVE SELECTOR DIAGNOSTIC: press any key to exit without entering the C# selector...");
+                    if (!Console.IsInputRedirected)
+                    {
+                        Console.ReadKey(true);
+                    }
+                    return true;
                 }
                 catch (EntryPointNotFoundException ex)
                 {
-                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: SelectWindowFromRows was not exported: {ex.Message}");
-                    return false;
+                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector entry point not found: {ex.Message}");
+                    canceled = true;
+                    Console.Error.WriteLine("NATIVE SELECTOR DIAGNOSTIC: press any key to exit without entering the C# selector...");
+                    if (!Console.IsInputRedirected)
+                    {
+                        Console.ReadKey(true);
+                    }
+                    return true;
                 }
                 catch (BadImageFormatException ex)
                 {
                     Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector DLL has the wrong architecture: {ex.Message}");
-                    return false;
+                    canceled = true;
+                    Console.Error.WriteLine("NATIVE SELECTOR DIAGNOSTIC: press any key to exit without entering the C# selector...");
+                    if (!Console.IsInputRedirected)
+                    {
+                        Console.ReadKey(true);
+                    }
+                    return true;
                 }
                 catch (Exception ex)
                 {
@@ -4044,3 +4069,4 @@ namespace WindowResizer.CLI.Commands
         }
     }
 }
+
