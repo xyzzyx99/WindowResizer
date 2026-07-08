@@ -236,6 +236,14 @@ namespace WindowResizer.CLI.Commands
                     lastConsoleWidth = pendingConsoleWidth;
                     lastConsoleHeight = pendingConsoleHeight;
                     resizePending = false;
+
+                    // A console resize invalidates every cached geometry assumption:
+                    // the visible buffer dimensions, the hidden-cache width, and the
+                    // old selected-row locations.  Force the next paint to be a full
+                    // frame at the new Win32 srWindow size instead of allowing the
+                    // incremental row/scroll path to keep using stale dimensions.
+                    renderState.Invalidate();
+
                     HideSelectorCursor(usingAlternateScreen);
                     pageSize = GetSelectorPageSize();
                     RenderTargetWindowSelector(targets, selectedIndex, ref offset, pageSize, startTop,
@@ -903,14 +911,15 @@ namespace WindowResizer.CLI.Commands
 
         private static int GetSafeSelectorWidth()
         {
-            try
-            {
-                return Math.Max(1, Math.Min(Console.BufferWidth, Console.WindowWidth));
-            }
-            catch
-            {
-                return 80;
-            }
+            // For the classic screen-buffer selector path, the active output
+            // handle can be a dedicated visible screen buffer rather than the
+            // process' original STDOUT buffer.  Console.WindowWidth/BufferWidth
+            // can lag behind or report the old buffer after conhost is resized,
+            // which leaves a stale right-side area when widened and makes writes
+            // target the wrong width when narrowed.  Always use the Win32
+            // srWindow width from the current STDOUT handle when possible.
+            var width = GetSafeConsoleWidth();
+            return width > 0 ? Math.Max(1, width) : 80;
         }
 
         private static void RenderTargetWindowSelector(List<WindowCmd.TargetWindow> targets, int selectedIndex, ref int offset,
@@ -1853,11 +1862,11 @@ namespace WindowResizer.CLI.Commands
                     {
                         hiddenCache[index].UnicodeChar = manualRow.Cells[i].UnicodeChar;
                     }
+                    else if (hiddenCache[index].UnicodeChar == '\0')
+                    {
+                        hiddenCache[index].UnicodeChar = ' ';
+                    }
 
-                    // If the hidden row has text, leave UnicodeChar untouched,
-                    // including any '\0' trailing cell that conhost uses for the
-                    // second half of a wide glyph. Replacing that cell with a
-                    // space is enough to make later text look shifted/skewed.
                     hiddenCache[index].Attributes = manualRow.Cells[i].Attributes;
                 }
 
