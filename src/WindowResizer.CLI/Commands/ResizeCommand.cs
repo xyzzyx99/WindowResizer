@@ -120,7 +120,23 @@ namespace WindowResizer.CLI.Commands
         private static class NativeConsoleSelector
         {
             [DllImport("WindowResizer.Selector.Native.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, EntryPoint = "SelectWindowFromRows")]
-            private static extern int SelectWindowFromRows(string rowsText, int initialIndex, out int selectedIndex);
+            private static extern int SelectWindowFromRows(
+                [In] NativeSelectorRow[] rows,
+                int rowCount,
+                int initialIndex,
+                out int selectedIndex);
+
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+            private struct NativeSelectorRow
+            {
+                public int Sequence;
+                public int ProcessId;
+                public IntPtr WindowHandle;
+                public int IsTopForProcess;
+
+                [MarshalAs(UnmanagedType.LPWStr)]
+                public string DisplayText;
+            }
 
             public static bool TrySelectTarget(List<WindowCmd.TargetWindow> targets, out WindowCmd.TargetWindow selectedWindow, out bool canceled)
             {
@@ -134,9 +150,17 @@ namespace WindowResizer.CLI.Commands
 
                 try
                 {
-                    var rows = string.Join("\n", targets.Select(FormatNativeSelectorRow));
+                    var rows = targets.Select((target, index) => new NativeSelectorRow
+                    {
+                        Sequence = index,
+                        ProcessId = target.ProcessId,
+                        WindowHandle = target.Handle,
+                        IsTopForProcess = target.IsTopForProcess ? 1 : 0,
+                        DisplayText = FormatNativeSelectorRow(target)
+                    }).ToArray();
+
                     int selectedIndex;
-                    var result = SelectWindowFromRows(rows, 0, out selectedIndex);
+                    var result = SelectWindowFromRows(rows, rows.Length, 0, out selectedIndex);
 
                     if (result == 0)
                     {
@@ -153,12 +177,14 @@ namespace WindowResizer.CLI.Commands
                     Output.Error($"Native selector failed with code {result}; falling back to managed selector.");
                     return false;
                 }
-                catch (DllNotFoundException)
+                catch (DllNotFoundException ex)
                 {
+                    Output.Error($"Native selector DLL not found: {ex.Message}");
                     return false;
                 }
-                catch (EntryPointNotFoundException)
+                catch (EntryPointNotFoundException ex)
                 {
+                    Output.Error($"Native selector entry point not found: {ex.Message}");
                     return false;
                 }
                 catch (BadImageFormatException ex)
