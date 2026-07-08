@@ -1853,11 +1853,11 @@ namespace WindowResizer.CLI.Commands
                     {
                         hiddenCache[index].UnicodeChar = manualRow.Cells[i].UnicodeChar;
                     }
-                    else if (hiddenCache[index].UnicodeChar == '\0')
-                    {
-                        hiddenCache[index].UnicodeChar = ' ';
-                    }
 
+                    // If the hidden row has text, leave UnicodeChar untouched,
+                    // including any '\0' trailing cell that conhost uses for the
+                    // second half of a wide glyph. Replacing that cell with a
+                    // space is enough to make later text look shifted/skewed.
                     hiddenCache[index].Attributes = manualRow.Cells[i].Attributes;
                 }
 
