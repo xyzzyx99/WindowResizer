@@ -130,7 +130,7 @@ namespace WindowResizer.CLI.Commands
         {
             [DllImport("WindowResizer.Selector.Native.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, EntryPoint = "SelectWindowFromRows")]
             private static extern int SelectWindowFromRows(
-                [In] NativeSelectorRow[] rows,
+                [In, MarshalAs(UnmanagedType.LPArray, SizeParamIndex = 1)] NativeSelectorRow[] rows,
                 int rowCount,
                 int initialIndex,
                 out int selectedIndex);
@@ -167,6 +167,8 @@ namespace WindowResizer.CLI.Commands
                         IsTopForProcess = target.IsTopForProcess ? 1 : 0,
                         DisplayText = FormatNativeSelectorRow(target)
                     }).ToArray();
+
+                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: passing {rows.Length} rows to native selector.");
 
                     int selectedIndex;
                     var result = SelectWindowFromRows(rows, rows.Length, 0, out selectedIndex);
@@ -4069,4 +4071,5 @@ namespace WindowResizer.CLI.Commands
         }
     }
 }
+
 
