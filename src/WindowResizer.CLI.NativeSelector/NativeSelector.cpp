@@ -1,9 +1,13 @@
-
+﻿
+#ifndef UNICODE
 #define UNICODE
+#endif
+#ifndef _UNICODE
 #define _UNICODE
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
-
-#include <windows.h>
+#endif#include <windows.h>
 #include <algorithm>
 #include <cwctype>
 #include <sstream>
@@ -637,9 +641,9 @@ static int RunSelector(const std::vector<std::wstring>& rows, int initialIndex, 
                 break;
 
             default:
-                if (k.UnicodeChar != L'\0')
+                if (k.uChar.UnicodeChar != L'\0')
                 {
-                    JumpToProcessLetter(rows, k.UnicodeChar, selectedIndex);
+                    JumpToProcessLetter(rows, k.uChar.UnicodeChar, selectedIndex);
                     selectionChanged = selectedIndex != oldSelected;
                     dirty = true;
                 }
@@ -692,3 +696,4 @@ extern "C" __declspec(dllexport) int __stdcall SelectWindowFromRows(const wchar_
 
     return result;
 }
+
