@@ -11,7 +11,6 @@
 #include <windows.h>
 #include <algorithm>
 #include <cstdint>
-#include <cstdlib>
 #include <cwctype>
 #include <string>
 #include <vector>
@@ -25,193 +24,157 @@ struct NativeSelectorRow
     const wchar_t* DisplayText;
 };
 
-struct RowInfo
-{
-    std::wstring Text;
-    bool IsTopForProcess;
-};
-
-struct TextSegment
-{
-    int Start;
-    int End;
-    WORD Attr;
-};
-
-static HANDLE gOutput = INVALID_HANDLE_VALUE;
-static HANDLE gInput = INVALID_HANDLE_VALUE;
+static HANDLE gOut = INVALID_HANDLE_VALUE;
+static HANDLE gIn = INVALID_HANDLE_VALUE;
+static HANDLE gHidden = INVALID_HANDLE_VALUE;
 static DWORD gOriginalInputMode = 0;
 static CONSOLE_CURSOR_INFO gOriginalCursor{};
-static WORD gOriginalAttributes = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
 static bool gHadCursor = false;
 
 static const int kHeaderLines = 2;
 static const int kFooterLines = 1;
+static const int kBodyTop = kHeaderLines;
 
-static int ClampInt(int value, int minValue, int maxValue)
+static int ClampInt(int v, int lo, int hi)
 {
-    if (value < minValue) return minValue;
-    if (value > maxValue) return maxValue;
-    return value;
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
 }
 
-static int RectWidth(const SMALL_RECT& rect)
+static int RectWidth(const SMALL_RECT& r)
 {
-    return rect.Right - rect.Left + 1;
+    return r.Right - r.Left + 1;
 }
 
-static int RectHeight(const SMALL_RECT& rect)
+static int RectHeight(const SMALL_RECT& r)
 {
-    return rect.Bottom - rect.Top + 1;
+    return r.Bottom - r.Top + 1;
 }
 
-static WORD OriginalBackground()
+static bool GetVisibleInfo(CONSOLE_SCREEN_BUFFER_INFO& info, int& width, int& height)
 {
-    return static_cast<WORD>(gOriginalAttributes & 0x00F0);
+    if (!GetConsoleScreenBufferInfo(gOut, &info))
+        return false;
+
+    width = RectWidth(info.srWindow);
+    height = RectHeight(info.srWindow);
+
+    if (width < 1) width = 1;
+    if (height < 1) height = 1;
+    return true;
 }
 
-static WORD OriginalForeground()
+static WORD NormalAttrFromInfo(const CONSOLE_SCREEN_BUFFER_INFO& info)
 {
-    WORD fg = static_cast<WORD>(gOriginalAttributes & 0x000F);
-    if (fg == 0 && OriginalBackground() == 0)
-        fg = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
-    return fg;
+    return info.wAttributes;
+}
+
+static WORD ForegroundBits(WORD attr)
+{
+    return attr & (FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY);
+}
+
+static WORD BackgroundBits(WORD attr)
+{
+    return attr & (BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_BLUE | BACKGROUND_INTENSITY);
 }
 
 static WORD ForegroundFromBackground(WORD attr)
 {
-    WORD fg = static_cast<WORD>((attr >> 4) & 0x000F);
-    // If the terminal background is black, black-on-grey is the intended inverse-like selection.
+    WORD bg = BackgroundBits(attr);
+    WORD fg = 0;
+    if (bg & BACKGROUND_RED) fg |= FOREGROUND_RED;
+    if (bg & BACKGROUND_GREEN) fg |= FOREGROUND_GREEN;
+    if (bg & BACKGROUND_BLUE) fg |= FOREGROUND_BLUE;
+    if (bg & BACKGROUND_INTENSITY) fg |= FOREGROUND_INTENSITY;
+
+    // If the terminal background is black, use black-on-grey for the selected row.
     return fg;
 }
 
-static WORD NormalAttr()
+static WORD SelectedAttrFromInfo(const CONSOLE_SCREEN_BUFFER_INFO& info)
 {
-    return static_cast<WORD>(OriginalBackground() | OriginalForeground());
+    const WORD greyBackground = BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_BLUE;
+    return greyBackground | ForegroundFromBackground(info.wAttributes);
 }
 
-static WORD HeaderAttr()
+static WORD HeaderAttrFromInfo(const CONSOLE_SCREEN_BUFFER_INFO& info)
 {
-    return static_cast<WORD>(OriginalBackground() | OriginalForeground() | FOREGROUND_INTENSITY);
+    return BackgroundBits(info.wAttributes) | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
 }
 
-static WORD FooterAttr()
+static WORD TopProcessAttrFromInfo(const CONSOLE_SCREEN_BUFFER_INFO& info)
 {
-    return HeaderAttr();
+    return BackgroundBits(info.wAttributes) | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
 }
 
-static WORD SelectedAttr()
+static WORD FooterAttrFromInfo(const CONSOLE_SCREEN_BUFFER_INFO& info)
 {
-    WORD greyBackground = BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_BLUE;
-    WORD fgFromTerminalBackground = ForegroundFromBackground(gOriginalAttributes);
-    return static_cast<WORD>(greyBackground | fgFromTerminalBackground);
+    return info.wAttributes;
 }
 
-static WORD TopProcessAttr(bool selected)
+static HANDLE CreateHiddenBuffer()
 {
-    WORD yellow = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-    WORD background = selected
-        ? static_cast<WORD>(BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_BLUE)
-        : OriginalBackground();
-    return static_cast<WORD>(background | yellow);
+    return CreateConsoleScreenBuffer(
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        CONSOLE_TEXTMODE_BUFFER,
+        nullptr);
 }
 
-static CHAR_INFO MakeCell(wchar_t ch, WORD attr)
+static void SetBufferSizeSafe(HANDLE h, int width, int height)
 {
-    CHAR_INFO cell{};
-    cell.Char.UnicodeChar = ch;
-    cell.Attributes = attr;
-    return cell;
-}
+    if (width < 1) width = 1;
+    if (height < 1) height = 1;
+    if (width > 32760) width = 32760;
+    if (height > 32760) height = 32760;
 
-static bool GetConsoleWindow(HANDLE output, SMALL_RECT& windowRect, int& width, int& height)
-{
     CONSOLE_SCREEN_BUFFER_INFO info{};
-    if (!GetConsoleScreenBufferInfo(output, &info))
-        return false;
-
-    gOriginalAttributes = info.wAttributes;
-    windowRect = info.srWindow;
-    width = std::max(1, RectWidth(info.srWindow));
-    height = std::max(1, RectHeight(info.srWindow));
-    return true;
-}
-
-static void HideCursor(HANDLE output)
-{
-    CONSOLE_CURSOR_INFO cursor{};
-    if (GetConsoleCursorInfo(output, &cursor))
+    if (GetConsoleScreenBufferInfo(h, &info))
     {
-        cursor.bVisible = FALSE;
-        SetConsoleCursorInfo(output, &cursor);
+        if (info.dwSize.X == width && info.dwSize.Y == height)
+            return;
     }
+
+    COORD size{};
+    size.X = static_cast<SHORT>(width);
+    size.Y = static_cast<SHORT>(height);
+    SetConsoleScreenBufferSize(h, size);
 }
 
-static void PutText(std::vector<CHAR_INFO>& frame, int width, int height, int x, int y,
-    const std::wstring& text, WORD attr, int textOffset = 0)
+static void ClearLine(HANDLE h, short y, short width, WORD attr)
 {
-    if (y < 0 || y >= height || width <= 0)
+    DWORD written = 0;
+    COORD pos{0, y};
+    FillConsoleOutputCharacterW(h, L' ', width, pos, &written);
+    FillConsoleOutputAttribute(h, attr, width, pos, &written);
+}
+
+static void WriteAt(HANDLE h, short x, short y, const std::wstring& text, WORD attr)
+{
+    if (text.empty())
         return;
 
-    if (textOffset < 0)
-        textOffset = 0;
-
-    int outX = x;
-    for (int i = textOffset; i < static_cast<int>(text.size()) && outX < width; ++i)
-    {
-        if (outX >= 0)
-        {
-            size_t pos = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(outX);
-            frame[pos].Char.UnicodeChar = text[static_cast<size_t>(i)];
-            frame[pos].Attributes = attr;
-        }
-        ++outX;
-    }
+    DWORD written = 0;
+    COORD pos{x, y};
+    SetConsoleCursorPosition(h, pos);
+    SetConsoleTextAttribute(h, attr);
+    WriteConsoleW(h, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr);
 }
 
-static void PutTextWithSegments(std::vector<CHAR_INFO>& frame, int width, int height, int x, int y,
-    const std::wstring& text, WORD defaultAttr, int textOffset, const std::vector<TextSegment>& segments)
+static wchar_t FirstJumpLetter(const std::wstring& s)
 {
-    if (y < 0 || y >= height || width <= 0)
-        return;
-
-    if (textOffset < 0)
-        textOffset = 0;
-
-    int outX = x;
-    for (int i = textOffset; i < static_cast<int>(text.size()) && outX < width; ++i)
+    for (wchar_t ch : s)
     {
-        WORD attr = defaultAttr;
-        for (const TextSegment& segment : segments)
-        {
-            if (i >= segment.Start && i < segment.End)
-            {
-                attr = segment.Attr;
-                break;
-            }
-        }
-
-        if (outX >= 0)
-        {
-            size_t pos = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(outX);
-            frame[pos].Char.UnicodeChar = text[static_cast<size_t>(i)];
-            frame[pos].Attributes = attr;
-        }
-        ++outX;
-    }
-}
-
-static wchar_t FirstJumpLetter(const std::wstring& text)
-{
-    for (wchar_t ch : text)
-    {
-        if (iswalpha(ch) || iswdigit(ch))
+        if (iswalnum(ch))
             return static_cast<wchar_t>(towupper(ch));
     }
     return L'\0';
 }
 
-static void JumpToLetter(const std::vector<RowInfo>& rows, wchar_t key, int& selectedIndex)
+static void JumpToLetter(const std::vector<std::wstring>& rows, wchar_t key, int& selectedIndex)
 {
     if (rows.empty() || key == L'\0')
         return;
@@ -223,7 +186,7 @@ static void JumpToLetter(const std::vector<RowInfo>& rows, wchar_t key, int& sel
     for (int step = 1; step <= count; ++step)
     {
         int index = (start + step) % count;
-        if (FirstJumpLetter(rows[static_cast<size_t>(index)].Text) == key)
+        if (FirstJumpLetter(rows[static_cast<size_t>(index)]) == key)
         {
             selectedIndex = index;
             return;
@@ -231,285 +194,325 @@ static void JumpToLetter(const std::vector<RowInfo>& rows, wchar_t key, int& sel
     }
 }
 
-static int ProcessNameEnd(const std::wstring& displayText)
+static std::wstring SafeText(const wchar_t* p)
 {
-    size_t pipe = displayText.find(L" | ");
-    size_t bracket = displayText.find(L" [");
+    return p ? std::wstring(p) : std::wstring();
+}
+
+static size_t ProcessNameLength(const std::wstring& row)
+{
+    size_t bar = row.find(L" |");
+    size_t spaceBracket = row.find(L" [");
+
     size_t end = std::wstring::npos;
-
-    if (pipe != std::wstring::npos)
-        end = pipe;
-    if (bracket != std::wstring::npos)
-        end = end == std::wstring::npos ? bracket : std::min(end, bracket);
+    if (bar != std::wstring::npos) end = bar;
+    if (spaceBracket != std::wstring::npos) end = std::min(end, spaceBracket);
 
     if (end == std::wstring::npos)
-        end = displayText.find(L' ');
-    if (end == std::wstring::npos)
-        end = displayText.size();
+        end = row.size();
 
-    return static_cast<int>(end);
+    while (end > 0 && iswspace(row[end - 1]))
+        --end;
+
+    return end;
 }
 
-static std::vector<TextSegment> TopSegments(const RowInfo& row, int prefixLength, bool selected)
+static void WriteTopHighlights(HANDLE h, short y, const std::wstring& row, WORD topAttr)
 {
-    std::vector<TextSegment> segments;
-    if (!row.IsTopForProcess || row.Text.empty())
-        return segments;
+    size_t procLen = ProcessNameLength(row);
+    if (procLen > 0)
+        WriteAt(h, 2, y, row.substr(0, procLen), topAttr);
 
-    WORD topAttr = TopProcessAttr(selected);
-
-    int processEnd = ProcessNameEnd(row.Text);
-    if (processEnd > 0)
-        segments.push_back(TextSegment{prefixLength, prefixLength + processEnd, topAttr});
-
-    size_t searchFrom = 0;
-    while (true)
-    {
-        size_t top = row.Text.find(L"Top", searchFrom);
-        if (top == std::wstring::npos)
-            break;
-
-        bool leftOk = top == 0 || !iswalpha(row.Text[top - 1]);
-        bool rightOk = top + 3 >= row.Text.size() || !iswalpha(row.Text[top + 3]);
-        if (leftOk && rightOk)
-        {
-            int start = prefixLength + static_cast<int>(top);
-            segments.push_back(TextSegment{start, start + 3, topAttr});
-        }
-        searchFrom = top + 3;
-    }
-
-    return segments;
+    size_t topPos = row.find(L"Top");
+    if (topPos != std::wstring::npos)
+        WriteAt(h, static_cast<short>(2 + static_cast<int>(topPos)), y, L"Top", topAttr);
 }
 
-static void Render(const std::vector<RowInfo>& rows, int selectedIndex, int top, int left, int width, int height, const SMALL_RECT& windowRect)
+static void DrawHidden(
+    const std::vector<std::wstring>& rows,
+    int selectedIndex,
+    int virtualTop,
+    int visibleWidth,
+    int visibleHeight,
+    const CONSOLE_SCREEN_BUFFER_INFO& visibleInfo)
 {
-    width = std::max(width, 1);
-    height = std::max(height, 1);
+    WORD normalAttr = NormalAttrFromInfo(visibleInfo);
+    WORD headerAttr = HeaderAttrFromInfo(visibleInfo);
+    WORD selectedAttr = SelectedAttrFromInfo(visibleInfo);
+    WORD topAttr = TopProcessAttrFromInfo(visibleInfo);
+    WORD footerAttr = FooterAttrFromInfo(visibleInfo);
 
-    std::vector<CHAR_INFO> frame(static_cast<size_t>(width) * static_cast<size_t>(height), MakeCell(L' ', NormalAttr()));
+    int hiddenWidth = std::max(visibleWidth, 120);
+    int hiddenHeight = std::max(visibleHeight, kBodyTop + static_cast<int>(rows.size()) + kFooterLines + 1);
 
-    PutText(frame, width, height, 0, 0, L"WindowResizer interactive selector", HeaderAttr());
-    PutText(frame, width, height, 0, 1, L"Up/Down/PgUp/PgDn/Home/End move | letters jump | Left/Right pan | Enter accepts | Esc cancels", HeaderAttr());
+    // This hidden dwSize is intentionally larger than the visible viewport.  The
+    // full rows are rendered in the hidden buffer first; then the visible window
+    // is copied cell-for-cell to the real console.  This matches the C++ demo
+    // behavior and lets the console host place double-width CJK cells before copy.
+    SetBufferSizeSafe(gHidden, hiddenWidth, hiddenHeight);
 
-    int bodyTop = kHeaderLines;
-    int bodyHeight = std::max(0, height - kHeaderLines - kFooterLines);
+    for (int y = 0; y < hiddenHeight; ++y)
+        ClearLine(gHidden, static_cast<short>(y), static_cast<short>(hiddenWidth), normalAttr);
 
-    for (int y = 0; y < bodyHeight; ++y)
+    WriteAt(gHidden, 0, 0, L"WindowResizer interactive selector", headerAttr);
+    WriteAt(gHidden, 0, 1, L"Up/Down select, PgUp/PgDn, Home/End, letters jump, Enter accepts, Esc cancels", headerAttr);
+
+    int bodyHeight = std::max(1, visibleHeight - kHeaderLines - kFooterLines);
+    int maxTop = std::max(0, static_cast<int>(rows.size()) - bodyHeight);
+    virtualTop = ClampInt(virtualTop, 0, maxTop);
+
+    for (int screenRow = 0; screenRow < bodyHeight; ++screenRow)
     {
-        int index = top + y;
-        int screenY = bodyTop + y;
+        int index = virtualTop + screenRow;
         if (index < 0 || index >= static_cast<int>(rows.size()))
             continue;
 
-        const RowInfo& row = rows[static_cast<size_t>(index)];
+        short y = static_cast<short>(kBodyTop + screenRow);
         bool selected = index == selectedIndex;
-        WORD attr = selected ? SelectedAttr() : NormalAttr();
+        WORD rowAttr = selected ? selectedAttr : normalAttr;
 
-        if (selected)
+        ClearLine(gHidden, y, static_cast<short>(hiddenWidth), rowAttr);
+
+        std::wstring line = selected ? L"> " : L"  ";
+        line += rows[static_cast<size_t>(index)];
+        WriteAt(gHidden, 0, y, line, rowAttr);
+
+        if (!selected)
         {
-            for (int x = 0; x < width; ++x)
-                frame[static_cast<size_t>(screenY) * static_cast<size_t>(width) + static_cast<size_t>(x)] = MakeCell(L' ', attr);
+            // Only top-process markers use yellow.  The selected row keeps the
+            // exact selected foreground/background requested by the C# scheme.
+            if (line.find(L"Top") != std::wstring::npos)
+                WriteTopHighlights(gHidden, y, line.substr(2), topAttr);
         }
-
-        std::wstring prefix = selected ? L"> " : L"  ";
-        std::wstring line = prefix + row.Text;
-        std::vector<TextSegment> segments = TopSegments(row, static_cast<int>(prefix.size()), selected);
-        PutTextWithSegments(frame, width, height, 0, screenY, line, attr, left, segments);
     }
 
-    int footerY = height - 1;
-    if (footerY >= 0)
-    {
-        for (int x = 0; x < width; ++x)
-            frame[static_cast<size_t>(footerY) * static_cast<size_t>(width) + static_cast<size_t>(x)] = MakeCell(L' ', NormalAttr());
+    short footerY = static_cast<short>(visibleHeight - 1);
+    ClearLine(gHidden, footerY, static_cast<short>(hiddenWidth), footerAttr);
+    std::wstring footer = L"Enter: resize selected   Esc: cancel   Rows: " + std::to_wstring(rows.size());
+    WriteAt(gHidden, 0, footerY, footer, footerAttr);
+}
 
-        std::wstring footer = L"rows=" + std::to_wstring(rows.size()) +
-            L" selected=" + std::to_wstring(selectedIndex + 1) + L"/" + std::to_wstring(rows.size()) +
-            L" left=" + std::to_wstring(left);
-        PutText(frame, width, height, 0, footerY, footer, FooterAttr());
-    }
+static bool CopyHiddenToVisible(int visibleWidth, int visibleHeight)
+{
+    if (visibleWidth <= 0 || visibleHeight <= 0)
+        return false;
+
+    std::vector<CHAR_INFO> cells(static_cast<size_t>(visibleWidth) * static_cast<size_t>(visibleHeight));
 
     COORD bufferSize{};
-    bufferSize.X = static_cast<SHORT>(width);
-    bufferSize.Y = static_cast<SHORT>(height);
+    bufferSize.X = static_cast<SHORT>(visibleWidth);
+    bufferSize.Y = static_cast<SHORT>(visibleHeight);
+
+    COORD bufferCoord{};
+    bufferCoord.X = 0;
+    bufferCoord.Y = 0;
+
+    SMALL_RECT rect{};
+    rect.Left = 0;
+    rect.Top = 0;
+    rect.Right = static_cast<SHORT>(visibleWidth - 1);
+    rect.Bottom = static_cast<SHORT>(visibleHeight - 1);
+
+    if (!ReadConsoleOutputW(gHidden, cells.data(), bufferSize, bufferCoord, &rect))
+        return false;
+
+    SMALL_RECT dest{};
+    dest.Left = 0;
+    dest.Top = 0;
+    dest.Right = static_cast<SHORT>(visibleWidth - 1);
+    dest.Bottom = static_cast<SHORT>(visibleHeight - 1);
+
+    return WriteConsoleOutputW(gOut, cells.data(), bufferSize, bufferCoord, &dest) != FALSE;
+}
+
+static void SaveVisible(std::vector<CHAR_INFO>& saved, int width, int height)
+{
+    saved.clear();
+    if (width <= 0 || height <= 0)
+        return;
+
+    saved.resize(static_cast<size_t>(width) * static_cast<size_t>(height));
+
+    COORD bufferSize{static_cast<SHORT>(width), static_cast<SHORT>(height)};
     COORD bufferCoord{0, 0};
-    SMALL_RECT target = windowRect;
-    WriteConsoleOutputW(gOutput, frame.data(), bufferSize, bufferCoord, &target);
+    SMALL_RECT rect{0, 0, static_cast<SHORT>(width - 1), static_cast<SHORT>(height - 1)};
+    ReadConsoleOutputW(gOut, saved.data(), bufferSize, bufferCoord, &rect);
+}
+
+static void RestoreVisible(const std::vector<CHAR_INFO>& saved, int width, int height)
+{
+    if (saved.empty() || width <= 0 || height <= 0)
+        return;
+
+    COORD bufferSize{static_cast<SHORT>(width), static_cast<SHORT>(height)};
+    COORD bufferCoord{0, 0};
+    SMALL_RECT rect{0, 0, static_cast<SHORT>(width - 1), static_cast<SHORT>(height - 1)};
+    WriteConsoleOutputW(gOut, saved.data(), bufferSize, bufferCoord, &rect);
+}
+
+static void HideCursor()
+{
+    if (gOut == INVALID_HANDLE_VALUE)
+        return;
+
+    CONSOLE_CURSOR_INFO cursor{};
+    if (GetConsoleCursorInfo(gOut, &cursor))
+    {
+        cursor.bVisible = FALSE;
+        SetConsoleCursorInfo(gOut, &cursor);
+    }
 }
 
 static void SetupInput()
 {
-    if (gInput == INVALID_HANDLE_VALUE)
+    if (gIn == INVALID_HANDLE_VALUE)
         return;
 
-    GetConsoleMode(gInput, &gOriginalInputMode);
-
-    DWORD mode = gOriginalInputMode;
-    mode |= ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS;
-    mode &= ~ENABLE_QUICK_EDIT_MODE;
-    SetConsoleMode(gInput, mode);
-}
-
-static std::vector<RowInfo> ConvertRows(const NativeSelectorRow* nativeRows, int rowCount)
-{
-    std::vector<RowInfo> rows;
-    if (!nativeRows || rowCount <= 0)
-        return rows;
-
-    rows.reserve(static_cast<size_t>(rowCount));
-    for (int i = 0; i < rowCount; ++i)
+    if (GetConsoleMode(gIn, &gOriginalInputMode))
     {
-        const wchar_t* text = nativeRows[i].DisplayText;
-        RowInfo row;
-        row.Text = (text && *text) ? std::wstring(text) : std::wstring(L"(empty row)");
-        row.IsTopForProcess = nativeRows[i].IsTopForProcess != 0;
-        rows.push_back(row);
+        DWORD mode = gOriginalInputMode;
+        mode |= ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT | ENABLE_EXTENDED_FLAGS;
+        mode &= ~ENABLE_QUICK_EDIT_MODE;
+        SetConsoleMode(gIn, mode);
     }
-    return rows;
 }
 
-static int RunSelector(const std::vector<RowInfo>& rows, int initialIndex, int* selectedIndexOut)
+static int RunSelector(const std::vector<std::wstring>& rows, int initialIndex, int* selectedIndexOut)
 {
     if (rows.empty())
         return -2;
 
-    gOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-    gInput = GetStdHandle(STD_INPUT_HANDLE);
-
-    if (gOutput == INVALID_HANDLE_VALUE || gInput == INVALID_HANDLE_VALUE)
+    gOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    gIn = GetStdHandle(STD_INPUT_HANDLE);
+    if (gOut == INVALID_HANDLE_VALUE || gIn == INVALID_HANDLE_VALUE)
         return -3;
 
-    CONSOLE_SCREEN_BUFFER_INFO originalInfo{};
-    if (GetConsoleScreenBufferInfo(gOutput, &originalInfo))
-        gOriginalAttributes = originalInfo.wAttributes;
-
-    gHadCursor = GetConsoleCursorInfo(gOutput, &gOriginalCursor) != FALSE;
+    gHadCursor = GetConsoleCursorInfo(gOut, &gOriginalCursor) != FALSE;
     SetupInput();
-    HideCursor(gOutput);
+    HideCursor();
+
+    gHidden = CreateHiddenBuffer();
+    if (gHidden == INVALID_HANDLE_VALUE)
+        return -4;
 
     int selectedIndex = ClampInt(initialIndex, 0, static_cast<int>(rows.size()) - 1);
-    int top = 0;
-    int left = 0;
-    int width = 80;
-    int height = 25;
+    int virtualTop = 0;
     int lastWidth = -1;
     int lastHeight = -1;
-    SMALL_RECT windowRect{};
+    int savedWidth = 0;
+    int savedHeight = 0;
+    std::vector<CHAR_INFO> saved;
     bool dirty = true;
 
     while (true)
     {
-        int currentWidth = width;
-        int currentHeight = height;
-        SMALL_RECT currentRect = windowRect;
-        if (GetConsoleWindow(gOutput, currentRect, currentWidth, currentHeight))
+        CONSOLE_SCREEN_BUFFER_INFO info{};
+        int width = 0;
+        int height = 0;
+        if (GetVisibleInfo(info, width, height))
         {
-            if (currentWidth != lastWidth || currentHeight != lastHeight ||
-                currentRect.Left != windowRect.Left || currentRect.Top != windowRect.Top)
+            if (width != lastWidth || height != lastHeight)
             {
-                width = currentWidth;
-                height = currentHeight;
-                windowRect = currentRect;
-                lastWidth = currentWidth;
-                lastHeight = currentHeight;
+                if (saved.empty())
+                {
+                    savedWidth = width;
+                    savedHeight = height;
+                    SaveVisible(saved, savedWidth, savedHeight);
+                }
+
+                lastWidth = width;
+                lastHeight = height;
                 dirty = true;
+            }
+
+            int bodyHeight = std::max(1, height - kHeaderLines - kFooterLines);
+            if (selectedIndex < virtualTop)
+                virtualTop = selectedIndex;
+            if (selectedIndex >= virtualTop + bodyHeight)
+                virtualTop = selectedIndex - bodyHeight + 1;
+            virtualTop = ClampInt(virtualTop, 0, std::max(0, static_cast<int>(rows.size()) - bodyHeight));
+
+            if (dirty)
+            {
+                DrawHidden(rows, selectedIndex, virtualTop, width, height, info);
+                CopyHiddenToVisible(width, height);
+                HideCursor();
+                dirty = false;
             }
         }
 
-        int bodyHeight = std::max(1, height - kHeaderLines - kFooterLines);
-        int maxTop = std::max(0, static_cast<int>(rows.size()) - bodyHeight);
-        if (selectedIndex < top)
-            top = selectedIndex;
-        if (selectedIndex >= top + bodyHeight)
-            top = selectedIndex - bodyHeight + 1;
-        top = ClampInt(top, 0, maxTop);
-        left = std::max(0, left);
-
-        if (dirty)
-        {
-            Render(rows, selectedIndex, top, left, width, height, windowRect);
-            HideCursor(gOutput);
-            dirty = false;
-        }
-
-        DWORD waitResult = WaitForSingleObject(gInput, 20);
-        if (waitResult != WAIT_OBJECT_0)
-        {
-            continue;
-        }
-
-        DWORD eventCount = 0;
-        if (!GetNumberOfConsoleInputEvents(gInput, &eventCount) || eventCount == 0)
+        DWORD wait = WaitForSingleObject(gIn, 30);
+        if (wait != WAIT_OBJECT_0)
             continue;
 
-        std::vector<INPUT_RECORD> events(eventCount);
-        DWORD eventsRead = 0;
-        if (!ReadConsoleInputW(gInput, events.data(), eventCount, &eventsRead))
+        DWORD available = 0;
+        if (!GetNumberOfConsoleInputEvents(gIn, &available) || available == 0)
             continue;
-        events.resize(eventsRead);
 
-        for (const INPUT_RECORD& eventRecord : events)
+        std::vector<INPUT_RECORD> events(available);
+        DWORD read = 0;
+        if (!ReadConsoleInputW(gIn, events.data(), available, &read))
+            continue;
+
+        for (DWORD i = 0; i < read; ++i)
         {
-            if (eventRecord.EventType == WINDOW_BUFFER_SIZE_EVENT)
+            const INPUT_RECORD& e = events[static_cast<size_t>(i)];
+
+            if (e.EventType == WINDOW_BUFFER_SIZE_EVENT)
             {
                 dirty = true;
                 continue;
             }
 
-            if (eventRecord.EventType == MOUSE_EVENT)
+            if (e.EventType == MOUSE_EVENT)
             {
-                const MOUSE_EVENT_RECORD& mouse = eventRecord.Event.MouseEvent;
-                if (mouse.dwEventFlags == MOUSE_WHEELED)
+                const MOUSE_EVENT_RECORD& m = e.Event.MouseEvent;
+
+                if (m.dwEventFlags == MOUSE_WHEELED)
                 {
-                    short wheelDelta = static_cast<short>((mouse.dwButtonState >> 16) & 0xffff);
-                    int steps = std::max(1, std::abs(static_cast<int>(wheelDelta)) / WHEEL_DELTA);
+                    short wheelDelta = static_cast<short>((m.dwButtonState >> 16) & 0xffff);
                     int old = selectedIndex;
-                    if (wheelDelta > 0)
-                        selectedIndex = std::max(0, selectedIndex - steps);
-                    else
-                        selectedIndex = std::min(static_cast<int>(rows.size()) - 1, selectedIndex + steps);
-                    dirty = dirty || (old != selectedIndex);
+                    selectedIndex = wheelDelta > 0
+                        ? std::max(0, selectedIndex - 1)
+                        : std::min(static_cast<int>(rows.size()) - 1, selectedIndex + 1);
+                    dirty = dirty || (selectedIndex != old);
                     continue;
                 }
 
-                bool leftDown = (mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
-                if (leftDown && (mouse.dwEventFlags == 0 || mouse.dwEventFlags == DOUBLE_CLICK))
+                bool leftDown = (m.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
+                if (leftDown && (m.dwEventFlags == 0 || m.dwEventFlags == DOUBLE_CLICK))
                 {
-                    int row = mouse.dwMousePosition.Y - windowRect.Top - kHeaderLines;
-                    int bodyHeightNow = std::max(1, height - kHeaderLines - kFooterLines);
-                    if (row >= 0 && row < bodyHeightNow)
+                    int clicked = virtualTop + m.dwMousePosition.Y - kBodyTop;
+                    if (clicked >= 0 && clicked < static_cast<int>(rows.size()))
                     {
-                        int index = top + row;
-                        if (index >= 0 && index < static_cast<int>(rows.size()))
+                        selectedIndex = clicked;
+                        dirty = true;
+                        if (m.dwEventFlags == DOUBLE_CLICK)
                         {
-                            selectedIndex = index;
-                            dirty = true;
-                            if (mouse.dwEventFlags == DOUBLE_CLICK)
-                            {
-                                if (selectedIndexOut) *selectedIndexOut = selectedIndex;
-                                return 1;
-                            }
+                            if (selectedIndexOut) *selectedIndexOut = selectedIndex;
+                            RestoreVisible(saved, savedWidth, savedHeight);
+                            return 1;
                         }
                     }
                 }
                 continue;
             }
 
-            if (eventRecord.EventType != KEY_EVENT || !eventRecord.Event.KeyEvent.bKeyDown)
+            if (e.EventType != KEY_EVENT || !e.Event.KeyEvent.bKeyDown)
                 continue;
 
-            const KEY_EVENT_RECORD& key = eventRecord.Event.KeyEvent;
-            int oldSelected = selectedIndex;
-            int oldLeft = left;
+            const KEY_EVENT_RECORD& k = e.Event.KeyEvent;
+            int old = selectedIndex;
 
-            switch (key.wVirtualKeyCode)
+            switch (k.wVirtualKeyCode)
             {
             case VK_ESCAPE:
+                RestoreVisible(saved, savedWidth, savedHeight);
                 return 0;
 
             case VK_RETURN:
                 if (selectedIndexOut) *selectedIndexOut = selectedIndex;
+                RestoreVisible(saved, savedWidth, savedHeight);
                 return 1;
 
             case VK_UP:
@@ -521,56 +524,61 @@ static int RunSelector(const std::vector<RowInfo>& rows, int initialIndex, int* 
                 break;
 
             case VK_PRIOR:
-                selectedIndex = std::max(0, selectedIndex - std::max(1, height - kHeaderLines - kFooterLines));
+                selectedIndex = std::max(0, selectedIndex - std::max(1, lastHeight - kHeaderLines - kFooterLines));
                 break;
 
             case VK_NEXT:
-                selectedIndex = std::min(static_cast<int>(rows.size()) - 1,
-                    selectedIndex + std::max(1, height - kHeaderLines - kFooterLines));
+                selectedIndex = std::min(static_cast<int>(rows.size()) - 1, selectedIndex + std::max(1, lastHeight - kHeaderLines - kFooterLines));
                 break;
 
             case VK_HOME:
-                if (key.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED))
-                    left = 0;
-                else
-                    selectedIndex = 0;
+                selectedIndex = 0;
                 break;
 
             case VK_END:
                 selectedIndex = static_cast<int>(rows.size()) - 1;
                 break;
 
-            case VK_LEFT:
-                left = std::max(0, left - 4);
-                break;
-
-            case VK_RIGHT:
-                left += 4;
-                break;
-
             default:
-                if (key.uChar.UnicodeChar != L'\0' && (iswalpha(key.uChar.UnicodeChar) || iswdigit(key.uChar.UnicodeChar)))
-                    JumpToLetter(rows, key.uChar.UnicodeChar, selectedIndex);
+                if (k.uChar.UnicodeChar != L'\0')
+                    JumpToLetter(rows, k.uChar.UnicodeChar, selectedIndex);
                 break;
             }
 
-            if (selectedIndex != oldSelected || left != oldLeft || key.wVirtualKeyCode == VK_HOME || key.wVirtualKeyCode == VK_END)
+            if (selectedIndex != old)
                 dirty = true;
         }
     }
 }
 
 extern "C" __declspec(dllexport)
-int __stdcall SelectWindowFromRows(const NativeSelectorRow* nativeRows, int rowCount, int initialIndex, int* selectedIndexOut)
+int __stdcall SelectWindowFromRows(
+    const NativeSelectorRow* nativeRows,
+    int rowCount,
+    int initialIndex,
+    int* selectedIndexOut)
 {
     int result = -1;
 
-    if (selectedIndexOut)
-        *selectedIndexOut = 0;
-
     try
     {
-        std::vector<RowInfo> rows = ConvertRows(nativeRows, rowCount);
+        if (selectedIndexOut)
+            *selectedIndexOut = 0;
+
+        if (!nativeRows || rowCount <= 0)
+            return -2;
+
+        std::vector<std::wstring> rows;
+        rows.reserve(static_cast<size_t>(rowCount));
+
+        for (int i = 0; i < rowCount; ++i)
+        {
+            std::wstring text = SafeText(nativeRows[i].DisplayText);
+            if (text.empty())
+                text = L"(empty)";
+            rows.push_back(text);
+        }
+
         result = RunSelector(rows, initialIndex, selectedIndexOut);
     }
     catch (...)
@@ -578,11 +586,17 @@ int __stdcall SelectWindowFromRows(const NativeSelectorRow* nativeRows, int rowC
         result = -100;
     }
 
-    if (gHadCursor && gOutput != INVALID_HANDLE_VALUE)
-        SetConsoleCursorInfo(gOutput, &gOriginalCursor);
+    if (gHadCursor && gOut != INVALID_HANDLE_VALUE)
+        SetConsoleCursorInfo(gOut, &gOriginalCursor);
 
-    if (gInput != INVALID_HANDLE_VALUE)
-        SetConsoleMode(gInput, gOriginalInputMode);
+    if (gIn != INVALID_HANDLE_VALUE && gOriginalInputMode != 0)
+        SetConsoleMode(gIn, gOriginalInputMode);
+
+    if (gHidden != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(gHidden);
+        gHidden = INVALID_HANDLE_VALUE;
+    }
 
     return result;
 }
