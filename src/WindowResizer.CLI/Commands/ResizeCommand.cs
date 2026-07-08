@@ -176,6 +176,7 @@ namespace WindowResizer.CLI.Commands
             }
             finally
             {
+                renderState.Dispose();
                 FinishSelectorScreen(usingAlternateScreen, originalCursorVisible);
                 RestoreSelectorMouseInput(mouseInputEnabled, originalInputMode);
                 Console.ForegroundColor = originalForeground;
@@ -907,17 +908,22 @@ namespace WindowResizer.CLI.Commands
 
             var width = GetSafeSelectorWidth();
             var visibleCount = Math.Min(pageSize, Math.Max(0, targets.Count - offset));
-            var rows = BuildSelectorRows(targets, selectedIndex, offset, pageSize, width, visibleCount,
-                highlightBackground, originalForeground, originalBackground);
 
-            if (!TryRenderSelectorRows(rows, startTop, width, renderState))
+            if (!renderState.HiddenRenderer.TryRender(targets, selectedIndex, offset, pageSize, startTop, width,
+                    visibleCount, highlightBackground, originalForeground, originalBackground, useAnsiColors, renderState))
             {
-                RenderTargetWindowSelectorWithConsoleWrites(targets, selectedIndex, offset, pageSize, startTop,
-                    width, visibleCount, highlightBackground, originalForeground, originalBackground, useAnsiColors, renderState);
-            }
-            else
-            {
-                renderState.Update(selectedIndex, offset, pageSize, width, targets.Count, rows);
+                var rows = BuildSelectorRows(targets, selectedIndex, offset, pageSize, width, visibleCount,
+                    highlightBackground, originalForeground, originalBackground);
+
+                if (!TryRenderSelectorRows(rows, startTop, width, renderState))
+                {
+                    RenderTargetWindowSelectorWithConsoleWrites(targets, selectedIndex, offset, pageSize, startTop,
+                        width, visibleCount, highlightBackground, originalForeground, originalBackground, useAnsiColors, renderState);
+                }
+                else
+                {
+                    renderState.Update(selectedIndex, offset, pageSize, width, targets.Count, rows);
+                }
             }
 
             // Leave the cursor in a harmless position and hide it again after
@@ -1060,6 +1066,113 @@ namespace WindowResizer.CLI.Commands
             }
 
             builder.Append("]", mutedForeground, background);
+        }
+
+        private static bool TryNormalizeSelectorVisibleBufferSize(IntPtr outputHandle)
+        {
+            if (outputHandle == IntPtr.Zero || outputHandle == new IntPtr(-1))
+            {
+                return false;
+            }
+
+            try
+            {
+                CONSOLE_SCREEN_BUFFER_INFO info;
+                if (!GetConsoleScreenBufferInfo(outputHandle, out info))
+                {
+                    return false;
+                }
+
+                var width = info.srWindow.Right - info.srWindow.Left + 1;
+                var height = info.srWindow.Bottom - info.srWindow.Top + 1;
+                if (width <= 0 || height <= 0 || width > short.MaxValue || height > short.MaxValue)
+                {
+                    return false;
+                }
+
+                if (info.srWindow.Left != 0 || info.srWindow.Top != 0)
+                {
+                    var rect = new SMALL_RECT
+                    {
+                        Left = 0,
+                        Top = 0,
+                        Right = (short)(width - 1),
+                        Bottom = (short)(height - 1)
+                    };
+                    SetConsoleWindowInfo(outputHandle, true, ref rect);
+                }
+
+                if (info.dwSize.X != width || info.dwSize.Y != height)
+                {
+                    var size = new COORD { X = (short)width, Y = (short)height };
+                    SetConsoleScreenBufferSize(outputHandle, size);
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryWriteSelectorFrameCells(IntPtr outputHandle, CHAR_INFO[] cells, int startTop, int width, int rowCount)
+        {
+            if (cells == null || rowCount <= 0 || width <= 0 || cells.Length < width * rowCount)
+            {
+                return false;
+            }
+
+            try
+            {
+                int viewportLeft;
+                int viewportTop;
+                int viewportWidth;
+                int viewportHeight;
+                if (TryGetSelectorViewport(out viewportLeft, out viewportTop, out viewportWidth, out viewportHeight))
+                {
+                    if (startTop >= viewportHeight || width > viewportWidth)
+                    {
+                        return true;
+                    }
+                }
+                else
+                {
+                    viewportLeft = 0;
+                    viewportTop = 0;
+                    viewportHeight = GetSafeConsoleHeight();
+                }
+
+                var writableRows = Math.Min(rowCount, Math.Max(0, viewportHeight - startTop));
+                if (writableRows <= 0)
+                {
+                    return true;
+                }
+
+                var frameCells = cells;
+                if (writableRows != rowCount)
+                {
+                    frameCells = new CHAR_INFO[width * writableRows];
+                    Array.Copy(cells, frameCells, frameCells.Length);
+                }
+
+                var absoluteTop = viewportTop + startTop;
+                var bufferSize = new COORD { X = (short)width, Y = (short)writableRows };
+                var bufferCoord = new COORD { X = 0, Y = 0 };
+                var writeRegion = new SMALL_RECT
+                {
+                    Left = (short)viewportLeft,
+                    Top = (short)absoluteTop,
+                    Right = (short)(viewportLeft + width - 1),
+                    Bottom = (short)(absoluteTop + writableRows - 1)
+                };
+
+                return WriteConsoleOutput(outputHandle, frameCells, bufferSize, bufferCoord, ref writeRegion);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static bool TryRenderSelectorRows(List<SelectorRowBuffer> rows, int startTop, int width,
@@ -1312,6 +1425,502 @@ namespace WindowResizer.CLI.Commands
             }
         }
 
+        private sealed class SelectorHiddenBufferRenderer : IDisposable
+        {
+            private const int InvalidSelectedIndex = -1;
+
+            private IntPtr hiddenHandle = IntPtr.Zero;
+            private CHAR_INFO[] hiddenCache;
+            private int hiddenWidth;
+            private int hiddenHeight;
+            private int cachedSelectedIndex = InvalidSelectedIndex;
+            private ConsoleColor cachedHighlightBackground;
+            private ConsoleColor cachedOriginalForeground;
+            private ConsoleColor cachedOriginalBackground;
+            private bool cacheValid;
+
+            public bool TryRender(List<WindowCmd.TargetWindow> targets, int selectedIndex, int offset, int pageSize,
+                int startTop, int width, int visibleCount, ConsoleColor highlightBackground,
+                ConsoleColor originalForeground, ConsoleColor originalBackground, bool usingAlternateScreen,
+                SelectorRenderState renderState)
+            {
+                if (!usingAlternateScreen || targets == null || targets.Count == 0 || width <= 0 || pageSize <= 0)
+                {
+                    return false;
+                }
+
+                var outputHandle = GetStdHandle(StdOutputHandle);
+                if (outputHandle == IntPtr.Zero || outputHandle == new IntPtr(-1))
+                {
+                    return false;
+                }
+
+                try
+                {
+                    TryNormalizeSelectorVisibleBufferSize(outputHandle);
+                    width = GetSafeSelectorWidth();
+                    if (width <= 0)
+                    {
+                        return false;
+                    }
+
+                    if (!EnsureHiddenCache(targets, selectedIndex, width, highlightBackground,
+                            originalForeground, originalBackground))
+                    {
+                        return false;
+                    }
+
+                    var previousOffset = renderState.LastOffset;
+                    var previousSelectedIndex = renderState.LastSelectedIndex;
+                    var geometryChanged = renderState.IsInvalid
+                                          || renderState.LastWidth != width
+                                          || renderState.LastPageSize != pageSize
+                                          || renderState.LastTargetCount != targets.Count;
+
+                    var rendered = false;
+                    if (!geometryChanged && previousOffset == offset)
+                    {
+                        rendered = TryPatchChangedSelectionRows(outputHandle, targets.Count, previousSelectedIndex,
+                            selectedIndex, offset, pageSize, startTop, width);
+                    }
+                    else if (!geometryChanged && previousOffset + 1 == offset)
+                    {
+                        rendered = TryScrollVisibleBody(outputHandle, startTop, width, pageSize, -1)
+                                   && TryWriteHiddenListRowToVisible(outputHandle, offset + pageSize - 1,
+                                       startTop + SelectorHeaderLines + pageSize - 1, width)
+                                   && TryPatchChangedSelectionRows(outputHandle, targets.Count, previousSelectedIndex,
+                                       selectedIndex, offset, pageSize, startTop, width)
+                                   && TryWriteSelectorFooter(outputHandle, targets.Count, offset, visibleCount, pageSize,
+                                       startTop, width, originalForeground, originalBackground);
+                    }
+                    else if (!geometryChanged && previousOffset - 1 == offset)
+                    {
+                        rendered = TryScrollVisibleBody(outputHandle, startTop, width, pageSize, 1)
+                                   && TryWriteHiddenListRowToVisible(outputHandle, offset,
+                                       startTop + SelectorHeaderLines, width)
+                                   && TryPatchChangedSelectionRows(outputHandle, targets.Count, previousSelectedIndex,
+                                       selectedIndex, offset, pageSize, startTop, width)
+                                   && TryWriteSelectorFooter(outputHandle, targets.Count, offset, visibleCount, pageSize,
+                                       startTop, width, originalForeground, originalBackground);
+                    }
+
+                    if (!rendered)
+                    {
+                        rendered = TryWriteFullFrameFromHiddenCache(outputHandle, targets.Count, offset, pageSize,
+                            startTop, width, visibleCount, originalForeground, originalBackground);
+                    }
+
+                    if (rendered)
+                    {
+                        renderState.Update(selectedIndex, offset, pageSize, width, targets.Count, null);
+                    }
+
+                    return rendered;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+
+            public void Dispose()
+            {
+                if (hiddenHandle != IntPtr.Zero && hiddenHandle != new IntPtr(-1))
+                {
+                    CloseHandle(hiddenHandle);
+                }
+
+                hiddenHandle = IntPtr.Zero;
+                hiddenCache = null;
+                cacheValid = false;
+            }
+
+            private bool EnsureHiddenCache(List<WindowCmd.TargetWindow> targets, int selectedIndex, int width,
+                ConsoleColor highlightBackground, ConsoleColor originalForeground, ConsoleColor originalBackground)
+            {
+                var requiredHeight = Math.Max(1, SelectorHeaderLines + targets.Count);
+                var colorsChanged = cachedHighlightBackground != highlightBackground
+                                    || cachedOriginalForeground != originalForeground
+                                    || cachedOriginalBackground != originalBackground;
+
+                if (!cacheValid || hiddenHandle == IntPtr.Zero || hiddenHandle == new IntPtr(-1)
+                    || hiddenWidth != width || hiddenHeight != requiredHeight || colorsChanged)
+                {
+                    return RebuildHiddenCache(targets, selectedIndex, width, requiredHeight,
+                        highlightBackground, originalForeground, originalBackground);
+                }
+
+                if (cachedSelectedIndex != selectedIndex)
+                {
+                    var oldSelectedIndex = cachedSelectedIndex;
+                    cachedSelectedIndex = selectedIndex;
+
+                    if (oldSelectedIndex >= 0 && oldSelectedIndex < targets.Count)
+                    {
+                        if (!RewriteHiddenListRowAndCache(targets, oldSelectedIndex, selectedIndex,
+                                highlightBackground, originalForeground, originalBackground))
+                        {
+                            return false;
+                        }
+                    }
+
+                    if (selectedIndex >= 0 && selectedIndex < targets.Count)
+                    {
+                        if (!RewriteHiddenListRowAndCache(targets, selectedIndex, selectedIndex,
+                                highlightBackground, originalForeground, originalBackground))
+                        {
+                            return false;
+                        }
+                    }
+                }
+
+                return true;
+            }
+
+            private bool RebuildHiddenCache(List<WindowCmd.TargetWindow> targets, int selectedIndex, int width, int height,
+                ConsoleColor highlightBackground, ConsoleColor originalForeground, ConsoleColor originalBackground)
+            {
+                Dispose();
+
+                hiddenHandle = CreateConsoleScreenBuffer(GenericRead | GenericWrite, FileShareRead | FileShareWrite,
+                    IntPtr.Zero, ConsoleTextmodeBuffer, IntPtr.Zero);
+                if (hiddenHandle == IntPtr.Zero || hiddenHandle == new IntPtr(-1))
+                {
+                    return false;
+                }
+
+                int mode;
+                if (GetConsoleMode(hiddenHandle, out mode))
+                {
+                    SetConsoleMode(hiddenHandle, mode & ~EnableWrapAtEolOutput);
+                }
+
+                var size = new COORD { X = (short)Math.Min(short.MaxValue, Math.Max(1, width)), Y = (short)Math.Min(short.MaxValue, Math.Max(1, height)) };
+                if (!SetConsoleScreenBufferSize(hiddenHandle, size))
+                {
+                    Dispose();
+                    return false;
+                }
+
+                hiddenWidth = size.X;
+                hiddenHeight = size.Y;
+                cachedSelectedIndex = selectedIndex;
+                cachedHighlightBackground = highlightBackground;
+                cachedOriginalForeground = originalForeground;
+                cachedOriginalBackground = originalBackground;
+
+                WriteHiddenTextRow(0, "Select a window/application:", originalForeground, originalBackground);
+                WriteHiddenTextRow(1, "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc.",
+                    originalForeground, originalBackground);
+
+                for (var i = 0; i < targets.Count; i++)
+                {
+                    WriteHiddenListRow(targets[i], i, selectedIndex, highlightBackground,
+                        originalForeground, originalBackground);
+                }
+
+                if (!ReadWholeHiddenCache())
+                {
+                    Dispose();
+                    return false;
+                }
+
+                cacheValid = true;
+                return true;
+            }
+
+            private bool RewriteHiddenListRowAndCache(List<WindowCmd.TargetWindow> targets, int targetIndex, int selectedIndex,
+                ConsoleColor highlightBackground, ConsoleColor originalForeground, ConsoleColor originalBackground)
+            {
+                if (targetIndex < 0 || targetIndex >= targets.Count)
+                {
+                    return true;
+                }
+
+                WriteHiddenListRow(targets[targetIndex], targetIndex, selectedIndex, highlightBackground,
+                    originalForeground, originalBackground);
+                return ReadHiddenCacheRows(SelectorHeaderLines + targetIndex, 1);
+            }
+
+            private void WriteHiddenTextRow(int row, string text, ConsoleColor foreground, ConsoleColor background)
+            {
+                ClearHiddenRow(row, foreground, background);
+                SetHiddenCursor(0, row);
+                WriteHiddenSegment(text, foreground, background);
+            }
+
+            private void WriteHiddenListRow(WindowCmd.TargetWindow target, int targetIndex, int selectedIndex,
+                ConsoleColor highlightBackground, ConsoleColor originalForeground, ConsoleColor originalBackground)
+            {
+                var selected = targetIndex == selectedIndex;
+                var rowBackground = selected ? highlightBackground : originalBackground;
+                var processForeground = selected ? originalForeground : ConsoleColor.Green;
+                var mutedForeground = selected ? originalForeground : ConsoleColor.DarkGray;
+                var titleForeground = originalForeground;
+                var title = string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title;
+                var row = SelectorHeaderLines + targetIndex;
+
+                ClearHiddenRow(row, originalForeground, rowBackground);
+                SetHiddenCursor(0, row);
+
+                WriteHiddenSegment(selected ? "> " : "  ", titleForeground, rowBackground);
+                WriteHiddenSegment(target.ProcessName, processForeground, rowBackground);
+                WriteHiddenProcessInfo(target, selected, processForeground, mutedForeground, rowBackground);
+                WriteHiddenSegment(" | ", mutedForeground, rowBackground);
+                WriteHiddenSegment(title, titleForeground, rowBackground);
+                WriteHiddenSegment($" (0x{target.Handle.ToInt64():X})", mutedForeground, rowBackground);
+            }
+
+            private void WriteHiddenProcessInfo(WindowCmd.TargetWindow target, bool selected,
+                ConsoleColor topForeground, ConsoleColor mutedForeground, ConsoleColor background)
+            {
+                if (target.ProcessId <= 0 && !target.IsTopForProcess)
+                {
+                    return;
+                }
+
+                var pidForeground = selected ? topForeground : mutedForeground;
+                WriteHiddenSegment(" [", mutedForeground, background);
+
+                if (target.ProcessId > 0)
+                {
+                    WriteHiddenSegment(target.ProcessId.ToString(), pidForeground, background);
+
+                    if (target.IsTopForProcess)
+                    {
+                        WriteHiddenSegment(" ", mutedForeground, background);
+                    }
+                }
+
+                if (target.IsTopForProcess)
+                {
+                    WriteHiddenSegment("Top", topForeground, background);
+                }
+
+                WriteHiddenSegment("]", mutedForeground, background);
+            }
+
+            private void ClearHiddenRow(int row, ConsoleColor foreground, ConsoleColor background)
+            {
+                if (row < 0 || row >= hiddenHeight)
+                {
+                    return;
+                }
+
+                var coord = new COORD { X = 0, Y = (short)row };
+                uint written;
+                FillConsoleOutputCharacter(hiddenHandle, ' ', (uint)hiddenWidth, coord, out written);
+                FillConsoleOutputAttribute(hiddenHandle, (ushort)GetSelectorAttribute(foreground, background),
+                    (uint)hiddenWidth, coord, out written);
+            }
+
+            private void SetHiddenCursor(int left, int top)
+            {
+                var coord = new COORD { X = (short)Math.Max(0, left), Y = (short)Math.Max(0, top) };
+                SetConsoleCursorPosition(hiddenHandle, coord);
+            }
+
+            private void WriteHiddenSegment(string text, ConsoleColor foreground, ConsoleColor background)
+            {
+                if (string.IsNullOrEmpty(text))
+                {
+                    return;
+                }
+
+                text = NormalizeSelectorText(text);
+                SetConsoleTextAttribute(hiddenHandle, (ushort)GetSelectorAttribute(foreground, background));
+                uint written;
+                WriteConsole(hiddenHandle, text, (uint)text.Length, out written, IntPtr.Zero);
+            }
+
+            private bool ReadWholeHiddenCache()
+            {
+                hiddenCache = new CHAR_INFO[hiddenWidth * hiddenHeight];
+                return ReadHiddenCacheRows(0, hiddenHeight);
+            }
+
+            private bool ReadHiddenCacheRows(int startRow, int count)
+            {
+                if (hiddenCache == null || startRow < 0 || count <= 0 || startRow + count > hiddenHeight)
+                {
+                    return false;
+                }
+
+                var temp = new CHAR_INFO[hiddenWidth * count];
+                var bufferSize = new COORD { X = (short)hiddenWidth, Y = (short)count };
+                var bufferCoord = new COORD { X = 0, Y = 0 };
+                var readRegion = new SMALL_RECT
+                {
+                    Left = 0,
+                    Top = (short)startRow,
+                    Right = (short)(hiddenWidth - 1),
+                    Bottom = (short)(startRow + count - 1)
+                };
+
+                if (!ReadConsoleOutput(hiddenHandle, temp, bufferSize, bufferCoord, ref readRegion))
+                {
+                    return false;
+                }
+
+                Array.Copy(temp, 0, hiddenCache, startRow * hiddenWidth, temp.Length);
+                return true;
+            }
+
+            private bool TryWriteFullFrameFromHiddenCache(IntPtr outputHandle, int targetCount, int offset, int pageSize,
+                int startTop, int width, int visibleCount, ConsoleColor originalForeground, ConsoleColor originalBackground)
+            {
+                var totalRows = SelectorHeaderLines + pageSize + SelectorFooterLines;
+                var frame = new CHAR_INFO[Math.Max(1, width * totalRows)];
+                var blankAttribute = GetSelectorAttribute(originalForeground, originalBackground);
+
+                for (var i = 0; i < frame.Length; i++)
+                {
+                    frame[i].UnicodeChar = ' ';
+                    frame[i].Attributes = blankAttribute;
+                }
+
+                CopyHiddenRowToFrame(0, frame, 0, width);
+                CopyHiddenRowToFrame(1, frame, 1, width);
+
+                for (var i = 0; i < pageSize; i++)
+                {
+                    var targetIndex = offset + i;
+                    if (targetIndex >= 0 && targetIndex < targetCount)
+                    {
+                        CopyHiddenRowToFrame(SelectorHeaderLines + targetIndex, frame, SelectorHeaderLines + i, width);
+                    }
+                }
+
+                var footer = BuildSelectorFooterRow(targetCount, offset, visibleCount, width,
+                    originalForeground, originalBackground);
+                Array.Copy(footer.Cells, 0, frame, (SelectorHeaderLines + pageSize) * width, width);
+
+                return TryWriteSelectorFrameCells(outputHandle, frame, startTop, width, totalRows);
+            }
+
+            private void CopyHiddenRowToFrame(int hiddenRow, CHAR_INFO[] frame, int frameRow, int width)
+            {
+                if (hiddenCache == null || hiddenRow < 0 || hiddenRow >= hiddenHeight || frameRow < 0)
+                {
+                    return;
+                }
+
+                Array.Copy(hiddenCache, hiddenRow * hiddenWidth, frame, frameRow * width, Math.Min(width, hiddenWidth));
+            }
+
+            private bool TryPatchChangedSelectionRows(IntPtr outputHandle, int targetCount, int oldSelectedIndex,
+                int selectedIndex, int offset, int pageSize, int startTop, int width)
+            {
+                var ok = true;
+                ok &= TryWriteVisibleListRowIfInPage(outputHandle, targetCount, oldSelectedIndex, offset, pageSize, startTop, width);
+                if (selectedIndex != oldSelectedIndex)
+                {
+                    ok &= TryWriteVisibleListRowIfInPage(outputHandle, targetCount, selectedIndex, offset, pageSize, startTop, width);
+                }
+
+                return ok;
+            }
+
+            private bool TryWriteVisibleListRowIfInPage(IntPtr outputHandle, int targetCount, int targetIndex,
+                int offset, int pageSize, int startTop, int width)
+            {
+                if (targetIndex < offset || targetIndex >= offset + pageSize || targetIndex < 0 || targetIndex >= targetCount)
+                {
+                    return true;
+                }
+
+                return TryWriteHiddenListRowToVisible(outputHandle, targetIndex,
+                    startTop + SelectorHeaderLines + targetIndex - offset, width);
+            }
+
+            private bool TryWriteHiddenListRowToVisible(IntPtr outputHandle, int targetIndex, int visibleRow, int width)
+            {
+                var hiddenRow = SelectorHeaderLines + targetIndex;
+                if (hiddenCache == null || hiddenRow < 0 || hiddenRow >= hiddenHeight)
+                {
+                    return true;
+                }
+
+                var cells = new CHAR_INFO[width];
+                Array.Copy(hiddenCache, hiddenRow * hiddenWidth, cells, 0, Math.Min(width, hiddenWidth));
+                return TryWriteSelectorRowBuffer(outputHandle, new SelectorRowBuffer(cells), visibleRow, width);
+            }
+
+            private bool TryWriteSelectorFooter(IntPtr outputHandle, int targetCount, int offset, int visibleCount,
+                int pageSize, int startTop, int width, ConsoleColor originalForeground, ConsoleColor originalBackground)
+            {
+                var footer = BuildSelectorFooterRow(targetCount, offset, visibleCount, width,
+                    originalForeground, originalBackground);
+                return TryWriteSelectorRowBuffer(outputHandle, footer, startTop + SelectorHeaderLines + pageSize, width);
+            }
+
+            private SelectorRowBuffer BuildSelectorFooterRow(int targetCount, int offset, int visibleCount, int width,
+                ConsoleColor originalForeground, ConsoleColor originalBackground)
+            {
+                var footer = targetCount > visibleCount
+                    ? $"Showing {offset + 1}-{offset + visibleCount} of {targetCount}."
+                    : $"Showing {targetCount} window(s).";
+                return BuildSelectorTextRow(footer, width, originalForeground, originalBackground);
+            }
+
+            private bool TryScrollVisibleBody(IntPtr outputHandle, int startTop, int width, int pageSize, int direction)
+            {
+                if (pageSize <= 1 || width <= 0)
+                {
+                    return true;
+                }
+
+                int viewportLeft;
+                int viewportTop;
+                int viewportWidth;
+                int viewportHeight;
+                if (!TryGetSelectorViewport(out viewportLeft, out viewportTop, out viewportWidth, out viewportHeight))
+                {
+                    viewportLeft = 0;
+                    viewportTop = 0;
+                }
+
+                var bodyTop = viewportTop + startTop + SelectorHeaderLines;
+                var bodyBottom = bodyTop + pageSize - 1;
+                var bodyLeft = viewportLeft;
+                var bodyRight = viewportLeft + width - 1;
+
+                SMALL_RECT source;
+                COORD destination;
+
+                if (direction < 0)
+                {
+                    source = new SMALL_RECT
+                    {
+                        Left = (short)bodyLeft,
+                        Top = (short)(bodyTop + 1),
+                        Right = (short)bodyRight,
+                        Bottom = (short)bodyBottom
+                    };
+                    destination = new COORD { X = (short)bodyLeft, Y = (short)bodyTop };
+                }
+                else
+                {
+                    source = new SMALL_RECT
+                    {
+                        Left = (short)bodyLeft,
+                        Top = (short)bodyTop,
+                        Right = (short)bodyRight,
+                        Bottom = (short)(bodyBottom - 1)
+                    };
+                    destination = new COORD { X = (short)bodyLeft, Y = (short)(bodyTop + 1) };
+                }
+
+                var fill = new CHAR_INFO
+                {
+                    UnicodeChar = ' ',
+                    Attributes = GetSelectorAttribute(cachedOriginalForeground, cachedOriginalBackground)
+                };
+
+                return ScrollConsoleScreenBuffer(outputHandle, ref source, IntPtr.Zero, destination, ref fill);
+            }
+        }
+
         private sealed class SelectorRowBuilder
         {
             private readonly int width;
@@ -1421,8 +2030,10 @@ namespace WindowResizer.CLI.Commands
             }
         }
 
-        private sealed class SelectorRenderState
+        private sealed class SelectorRenderState : IDisposable
         {
+            public SelectorHiddenBufferRenderer HiddenRenderer { get; } = new SelectorHiddenBufferRenderer();
+
             public bool IsInvalid { get; private set; } = true;
             public int LastSelectedIndex { get; private set; } = -1;
             public int LastOffset { get; private set; } = -1;
@@ -1447,6 +2058,11 @@ namespace WindowResizer.CLI.Commands
             {
                 IsInvalid = true;
                 LastRows = null;
+            }
+
+            public void Dispose()
+            {
+                HiddenRenderer.Dispose();
             }
         }
 
@@ -1900,6 +2516,7 @@ namespace WindowResizer.CLI.Commands
         private const int EnableMouseInput = 0x0010;
         private const int EnableWindowInput = 0x0008;
         private const int EnableQuickEditMode = 0x0040;
+        private const int EnableWrapAtEolOutput = 0x0002;
         private const int EnableExtendedFlags = 0x0080;
         private const ushort KeyEvent = 0x0001;
         private const ushort MouseEvent = 0x0002;
@@ -1907,6 +2524,11 @@ namespace WindowResizer.CLI.Commands
         private const uint DoubleClick = 0x0002;
         private const uint MouseWheeled = 0x0004;
         private const int WheelDelta = 120;
+        private const uint GenericRead = 0x80000000;
+        private const uint GenericWrite = 0x40000000;
+        private const uint FileShareRead = 0x00000001;
+        private const uint FileShareWrite = 0x00000002;
+        private const uint ConsoleTextmodeBuffer = 0x00000001;
         private const uint RightAltPressed = 0x0001;
         private const uint LeftAltPressed = 0x0002;
         private const uint RightCtrlPressed = 0x0004;
@@ -1934,6 +2556,42 @@ namespace WindowResizer.CLI.Commands
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         private static extern bool WriteConsoleOutput(IntPtr hConsoleOutput, CHAR_INFO[] lpBuffer,
             COORD dwBufferSize, COORD dwBufferCoord, ref SMALL_RECT lpWriteRegion);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool ReadConsoleOutput(IntPtr hConsoleOutput, CHAR_INFO[] lpBuffer,
+            COORD dwBufferSize, COORD dwBufferCoord, ref SMALL_RECT lpReadRegion);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "WriteConsoleW")]
+        private static extern bool WriteConsole(IntPtr hConsoleOutput, string lpBuffer,
+            uint nNumberOfCharsToWrite, out uint lpNumberOfCharsWritten, IntPtr lpReserved);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetConsoleTextAttribute(IntPtr hConsoleOutput, ushort wAttributes);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetConsoleCursorPosition(IntPtr hConsoleOutput, COORD dwCursorPosition);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool FillConsoleOutputCharacter(IntPtr hConsoleOutput, char cCharacter,
+            uint nLength, COORD dwWriteCoord, out uint lpNumberOfCharsWritten);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool FillConsoleOutputAttribute(IntPtr hConsoleOutput, ushort wAttribute,
+            uint nLength, COORD dwWriteCoord, out uint lpNumberOfAttrsWritten);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr CreateConsoleScreenBuffer(uint dwDesiredAccess, uint dwShareMode,
+            IntPtr lpSecurityAttributes, uint dwFlags, IntPtr lpScreenBufferData);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr hObject);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetConsoleScreenBufferSize(IntPtr hConsoleOutput, COORD dwSize);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool ScrollConsoleScreenBuffer(IntPtr hConsoleOutput, ref SMALL_RECT lpScrollRectangle,
+            IntPtr lpClipRectangle, COORD dwDestinationOrigin, ref CHAR_INFO lpFill);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool GetConsoleScreenBufferInfo(IntPtr hConsoleOutput, out CONSOLE_SCREEN_BUFFER_INFO lpConsoleScreenBufferInfo);
