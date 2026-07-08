@@ -1,5 +1,4 @@
-﻿
-#ifndef UNICODE
+﻿#ifndef UNICODE
 #define UNICODE
 #endif
 #ifndef _UNICODE
@@ -7,13 +6,14 @@
 #endif
 #ifndef NOMINMAX
 #define NOMINMAX
-#endif#include <windows.h>
+#endif
+
+#include <windows.h>
 #include <algorithm>
 #include <cwctype>
 #include <sstream>
 #include <string>
 #include <vector>
-
 static const WORD kNormalAttr = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
 static const WORD kHeaderAttr = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
 static const WORD kStatusAttr = BACKGROUND_BLUE | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
@@ -696,4 +696,5 @@ extern "C" __declspec(dllexport) int __stdcall SelectWindowFromRows(const wchar_
 
     return result;
 }
+
 
