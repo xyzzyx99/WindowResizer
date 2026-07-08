@@ -2665,7 +2665,14 @@ namespace WindowResizer.CLI.Commands
                     WriteHiddenListRow(i);
                 }
 
-                ReadHiddenCache();
+                if (!ReadHiddenCache())
+                {
+                    // If the backing buffer is wide/tall, reading the whole
+                    // rectangle in one API call can fail on classic conhost.
+                    // Do not leave an all-NUL cache, because that makes the
+                    // dedicated visible buffer look blank.
+                    BuildFallbackHiddenCache();
+                }
             }
 
             private void EnsureHiddenBufferGeometry()
@@ -2780,19 +2787,84 @@ namespace WindowResizer.CLI.Commands
                 WriteConsole(hiddenHandle, text, (uint)text.Length, out written, IntPtr.Zero);
             }
 
-            private void ReadHiddenCache()
+            private bool ReadHiddenCache()
             {
                 hiddenCache = new CHAR_INFO[hiddenWidth * hiddenHeight];
-                var bufferSize = new COORD { X = (short)hiddenWidth, Y = (short)hiddenHeight };
-                var bufferCoord = new COORD { X = 0, Y = 0 };
-                var readRegion = new SMALL_RECT
+
+                // Read in chunks instead of one large rectangle. The standalone
+                // demo used a small synthetic list, so a full dwSize read was
+                // fine. Real process/window titles can make the backing dwSize
+                // much wider, and ReadConsoleOutput can fail for a large region.
+                // Chunking keeps the same rendered-cell behavior while avoiding
+                // the blank-screen failure.
+                var maxCellsPerRead = 8192;
+                var rowsPerRead = Math.Max(1, Math.Min(hiddenHeight, maxCellsPerRead / Math.Max(1, hiddenWidth)));
+
+                for (var startRow = 0; startRow < hiddenHeight; startRow += rowsPerRead)
                 {
-                    Left = 0,
-                    Top = 0,
-                    Right = (short)(hiddenWidth - 1),
-                    Bottom = (short)(hiddenHeight - 1)
-                };
-                ReadConsoleOutput(hiddenHandle, hiddenCache, bufferSize, bufferCoord, ref readRegion);
+                    var rows = Math.Min(rowsPerRead, hiddenHeight - startRow);
+                    var temp = new CHAR_INFO[hiddenWidth * rows];
+                    var bufferSize = new COORD { X = (short)hiddenWidth, Y = (short)rows };
+                    var bufferCoord = new COORD { X = 0, Y = 0 };
+                    var readRegion = new SMALL_RECT
+                    {
+                        Left = 0,
+                        Top = (short)startRow,
+                        Right = (short)(hiddenWidth - 1),
+                        Bottom = (short)(startRow + rows - 1)
+                    };
+
+                    if (!ReadConsoleOutput(hiddenHandle, temp, bufferSize, bufferCoord, ref readRegion))
+                    {
+                        return false;
+                    }
+
+                    Array.Copy(temp, 0, hiddenCache, startRow * hiddenWidth, temp.Length);
+                }
+
+                return true;
+            }
+
+            private void BuildFallbackHiddenCache()
+            {
+                var attribute = GetSelectorAttribute(originalForeground, originalBackground);
+                hiddenCache = new CHAR_INFO[Math.Max(1, hiddenWidth * hiddenHeight)];
+
+                for (var i = 0; i < hiddenCache.Length; i++)
+                {
+                    hiddenCache[i].UnicodeChar = ' ';
+                    hiddenCache[i].Attributes = attribute;
+                }
+
+                WriteFallbackCacheRow(0, "Select a window/application:", originalForeground, originalBackground);
+                WriteFallbackCacheRow(1,
+                    "Use ↑/↓, PgUp/PgDn, Home/End, letter keys, mouse wheel, double-click, Enter, Esc.",
+                    originalForeground, originalBackground);
+
+                for (var i = 0; i < targets.Count; i++)
+                {
+                    var selected = i == selectedIndex;
+                    WriteFallbackCacheRow(SelectorHeaderLines + i, BuildPlainListRow(targets[i]),
+                        originalForeground, selected ? highlightBackground : originalBackground);
+                }
+            }
+
+            private void WriteFallbackCacheRow(int row, string text, ConsoleColor foreground, ConsoleColor background)
+            {
+                if (row < 0 || row >= hiddenHeight || hiddenCache == null)
+                {
+                    return;
+                }
+
+                var attribute = GetSelectorAttribute(foreground, background);
+                var start = row * hiddenWidth;
+                var normalized = NormalizeSelectorText(text ?? string.Empty);
+
+                for (var x = 0; x < hiddenWidth; x++)
+                {
+                    hiddenCache[start + x].UnicodeChar = x < normalized.Length ? normalized[x] : ' ';
+                    hiddenCache[start + x].Attributes = attribute;
+                }
             }
 
             private void RenderVisibleFrame()
