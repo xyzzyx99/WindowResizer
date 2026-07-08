@@ -17,7 +17,6 @@ namespace WindowResizer.CLI.Commands
     internal class ResizeCommand : Command
     {
         private const int SelectorResizePollMilliseconds = 50;
-        private const int SelectorResizeStableMilliseconds = 200;
 
         public ResizeCommand() : base("resize", "Resize window by process/title, use -w/--window for direct placement, or -i/--interactive to choose a window.")
         {
@@ -194,8 +193,6 @@ namespace WindowResizer.CLI.Commands
             var resizePending = false;
             var pendingConsoleWidth = lastConsoleWidth;
             var pendingConsoleHeight = lastConsoleHeight;
-            var pendingResizeTick = 0;
-
             while (true)
             {
                 // Windows Terminal may briefly re-enable or show the text cursor
@@ -213,45 +210,24 @@ namespace WindowResizer.CLI.Commands
                 var currentHeight = GetSafeConsoleHeight();
                 if (currentWidth != lastConsoleWidth || currentHeight != lastConsoleHeight)
                 {
-                    var now = Environment.TickCount;
-
                     if (!resizePending || currentWidth != pendingConsoleWidth || currentHeight != pendingConsoleHeight)
                     {
                         pendingConsoleWidth = currentWidth;
                         pendingConsoleHeight = currentHeight;
-                        pendingResizeTick = now;
                         resizePending = true;
-
-                        // Conhost redraws the active screen buffer while the user is
-                        // dragging the window border. If we leave the old selector
-                        // frame in that buffer, widening can expose stale right-side
-                        // cells and narrowing can leave the buffer in a geometry that
-                        // makes later writes appear ignored. Normalize and blank the
-                        // dedicated visible buffer immediately, then do the expensive
-                        // selector repaint only after the size has been stable.
-                        ClearSelectorVisibleViewport(originalForeground, originalBackground);
-                        renderState.Invalidate();
                     }
 
-                    // Do not redraw the selector table while the terminal border is
-                    // still moving. Redraw once only after the reported size has
-                    // remained the same for about 0.2 seconds.
-                    if (unchecked(now - pendingResizeTick) < SelectorResizeStableMilliseconds)
-                    {
-                        HideSelectorCursor(usingAlternateScreen);
-                        Thread.Sleep(SelectorResizePollMilliseconds);
-                        continue;
-                    }
-
-                    lastConsoleWidth = pendingConsoleWidth;
-                    lastConsoleHeight = pendingConsoleHeight;
+                    // Use the same behavior as the standalone hidden-buffer demo:
+                    // normalize the dedicated visible screen buffer to the current
+                    // srWindow size and repaint immediately from the hidden rendered
+                    // cache.  Do not blank the screen while dragging and do not wait
+                    // for a stable size here; the blank/debounce path was the source
+                    // of visible flicker in classic conhost.  The hidden renderer
+                    // will rebuild its backing dwSize only if the current visible
+                    // width exceeds the cached hidden width.
+                    lastConsoleWidth = currentWidth;
+                    lastConsoleHeight = currentHeight;
                     resizePending = false;
-
-                    // A console resize invalidates every cached geometry assumption:
-                    // the visible buffer dimensions, the hidden-cache width, and the
-                    // old selected-row locations.  Force the next paint to be a full
-                    // frame at the new Win32 srWindow size instead of allowing the
-                    // incremental row/scroll path to keep using stale dimensions.
                     renderState.Invalidate();
 
                     HideSelectorCursor(usingAlternateScreen);
