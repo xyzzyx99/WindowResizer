@@ -221,11 +221,21 @@ namespace WindowResizer.CLI.Commands
                         pendingConsoleHeight = currentHeight;
                         pendingResizeTick = now;
                         resizePending = true;
+
+                        // Conhost redraws the active screen buffer while the user is
+                        // dragging the window border. If we leave the old selector
+                        // frame in that buffer, widening can expose stale right-side
+                        // cells and narrowing can leave the buffer in a geometry that
+                        // makes later writes appear ignored. Normalize and blank the
+                        // dedicated visible buffer immediately, then do the expensive
+                        // selector repaint only after the size has been stable.
+                        ClearSelectorVisibleViewport(originalForeground, originalBackground);
+                        renderState.Invalidate();
                     }
 
-                    // Do not redraw while the terminal border is still moving.
-                    // Redraw once only after the reported size has remained the
-                    // same for about 0.2 seconds.
+                    // Do not redraw the selector table while the terminal border is
+                    // still moving. Redraw once only after the reported size has
+                    // remained the same for about 0.2 seconds.
                     if (unchecked(now - pendingResizeTick) < SelectorResizeStableMilliseconds)
                     {
                         HideSelectorCursor(usingAlternateScreen);
@@ -648,6 +658,58 @@ namespace WindowResizer.CLI.Commands
                 {
                     // Ignore VT cleanup failures.
                 }
+            }
+        }
+
+        private static void ClearSelectorVisibleViewport(ConsoleColor foreground, ConsoleColor background)
+        {
+            var outputHandle = GetStdHandle(StdOutputHandle);
+            if (outputHandle == IntPtr.Zero || outputHandle == new IntPtr(-1))
+            {
+                return;
+            }
+
+            try
+            {
+                // Keep the active visible screen buffer matched to the current
+                // visible window before clearing. This prevents conhost from
+                // showing stale cells when the window is widened and prevents
+                // later writes from targeting the previous width after narrowing.
+                TryNormalizeSelectorVisibleBufferSize(outputHandle);
+
+                CONSOLE_SCREEN_BUFFER_INFO info;
+                if (!GetConsoleScreenBufferInfo(outputHandle, out info))
+                {
+                    return;
+                }
+
+                var width = info.srWindow.Right - info.srWindow.Left + 1;
+                var height = info.srWindow.Bottom - info.srWindow.Top + 1;
+                if (width <= 0 || height <= 0)
+                {
+                    return;
+                }
+
+                var attribute = (ushort)GetSelectorAttribute(foreground, background);
+                for (var y = 0; y < height; y++)
+                {
+                    var coord = new COORD
+                    {
+                        X = info.srWindow.Left,
+                        Y = (short)(info.srWindow.Top + y)
+                    };
+
+                    uint written;
+                    FillConsoleOutputCharacter(outputHandle, ' ', (uint)width, coord, out written);
+                    FillConsoleOutputAttribute(outputHandle, attribute, (uint)width, coord, out written);
+                }
+
+                SetConsoleCursorPosition(outputHandle, new COORD { X = info.srWindow.Left, Y = info.srWindow.Top });
+            }
+            catch
+            {
+                // Resizing can race with conhost's own geometry updates. If a
+                // transient size is rejected, the stable redraw path will retry.
             }
         }
 
