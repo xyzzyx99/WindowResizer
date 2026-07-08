@@ -1843,19 +1843,17 @@ namespace WindowResizer.CLI.Commands
                 {
                     var index = baseIndex + i;
 
-                    // The hidden buffer gives us the console-rendered character cells,
-                    // which fixes the old Unicode overlap problem.  Some classic
-                    // conhost combinations, however, can return invisible attributes
-                    // from a non-active screen buffer.  Keep the hidden-buffer
-                    // characters, but use the selector's known attributes.  If the
-                    // hidden row came back empty, fall back to the manual row text
-                    // rather than leaving the selector blank.
-                    if (!hiddenHasText || hiddenCache[index].UnicodeChar == '\0')
+                    // Keep the hidden-buffer character cells exactly as conhost
+                    // rendered them.  Wide Unicode characters may intentionally
+                    // occupy a leading cell plus an empty trailing cell.  Replacing
+                    // those empty trailing cells with the manual row text skews the
+                    // whole line.  Only fall back to manual text when the entire
+                    // hidden row came back empty.
+                    if (!hiddenHasText)
                     {
                         hiddenCache[index].UnicodeChar = manualRow.Cells[i].UnicodeChar;
                     }
-
-                    if (hiddenCache[index].UnicodeChar == '\0')
+                    else if (hiddenCache[index].UnicodeChar == '\0')
                     {
                         hiddenCache[index].UnicodeChar = ' ';
                     }
