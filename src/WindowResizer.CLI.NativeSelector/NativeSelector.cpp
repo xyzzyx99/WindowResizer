@@ -35,6 +35,14 @@ struct HiddenCache
     int selectedIndex = -1;
     std::vector<CHAR_INFO> cells;
 };
+struct NativeSelectorRow
+{
+    const wchar_t* ProcessName;
+    const wchar_t* Title;
+    int ProcessId;
+    long long Handle;
+    int IsTopForProcess;
+};
 
 static int BodyTop()
 {
@@ -150,6 +158,70 @@ static std::vector<std::wstring> SplitRows(const wchar_t* rowsText)
     return rows;
 }
 
+
+static std::wstring SafeText(const wchar_t* text)
+{
+    return (text && *text) ? std::wstring(text) : std::wstring();
+}
+
+static std::wstring FormatHandleHex(long long handle)
+{
+    std::wostringstream ss;
+    ss << std::uppercase << std::hex << handle;
+    return ss.str();
+}
+
+static std::vector<std::wstring> BuildRowsFromNativeRows(const NativeSelectorRow* nativeRows, int rowCount)
+{
+    std::vector<std::wstring> rows;
+
+    if (!nativeRows || rowCount <= 0)
+        return rows;
+
+    rows.reserve(static_cast<size_t>(rowCount));
+
+    for (int i = 0; i < rowCount; ++i)
+    {
+        const NativeSelectorRow& item = nativeRows[i];
+
+        std::wstring processName = SafeText(item.ProcessName);
+        if (processName.empty())
+            processName = L"(unknown)";
+
+        std::wstring title = SafeText(item.Title);
+        if (title.empty())
+            title = L"(no title)";
+
+        std::wstring line = processName;
+
+        if (item.ProcessId > 0 || item.IsTopForProcess)
+        {
+            line += L" [";
+
+            if (item.ProcessId > 0)
+            {
+                line += std::to_wstring(item.ProcessId);
+                if (item.IsTopForProcess)
+                    line += L" ";
+            }
+
+            if (item.IsTopForProcess)
+                line += L"Top";
+
+            line += L"]";
+        }
+
+        line += L" | ";
+        line += title;
+        line += L" (0x";
+        line += FormatHandleHex(item.Handle);
+        line += L")";
+
+        rows.push_back(line);
+    }
+
+    return rows;
+}
 static int RequiredHiddenWidth(const std::vector<std::wstring>& rows, int visibleWidth)
 {
     int width = std::max(visibleWidth, 120);
@@ -659,13 +731,17 @@ static int RunSelector(const std::vector<std::wstring>& rows, int initialIndex, 
     }
 }
 
-extern "C" __declspec(dllexport) int __stdcall SelectWindowFromRows(const wchar_t* rowsText, int initialIndex, int* selectedIndexOut)
+extern "C" __declspec(dllexport) int __stdcall SelectWindowFromRows(
+    const NativeSelectorRow* nativeRows,
+    int rowCount,
+    int initialIndex,
+    int* selectedIndexOut)
 {
     int result = -1;
 
     try
     {
-        std::vector<std::wstring> rows = SplitRows(rowsText);
+        std::vector<std::wstring> rows = BuildRowsFromNativeRows(nativeRows, rowCount);
         result = RunSelector(rows, initialIndex, selectedIndexOut);
     }
     catch (...)
@@ -696,5 +772,4 @@ extern "C" __declspec(dllexport) int __stdcall SelectWindowFromRows(const wchar_
 
     return result;
 }
-
 
