@@ -91,8 +91,7 @@ namespace WindowResizer.CLI.Commands
                 return null;
             }
 
-            Output.Echo("Scanning processes ...");
-            var targets = WindowCmd.GetSelectableTargets(process, title, Output.Error);
+            var targets = RunWithScanningDots(() => WindowCmd.GetSelectableTargets(process, title, Output.Error));
             if (!targets.Any())
             {
                 Output.Error(string.IsNullOrWhiteSpace(process)
@@ -212,7 +211,34 @@ return false;
                 }
             }
 
-            private static string FormatNativeSelectorRow(WindowCmd.TargetWindow target)
+
+    private static T RunWithScanningDots<T>(System.Func<T> action)
+    {
+        System.Console.Write("Scanning processes");
+
+        using var done = new System.Threading.ManualResetEventSlim(false);
+        var thread = new System.Threading.Thread(() =>
+        {
+            while (!done.Wait(System.TimeSpan.FromSeconds(1)))
+            {
+                System.Console.Write(".");
+            }
+        });
+
+        thread.IsBackground = true;
+        thread.Start();
+
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            done.Set();
+            thread.Join();
+            System.Console.WriteLine();
+        }
+    }            private static string FormatNativeSelectorRow(WindowCmd.TargetWindow target)
             {
                 var title = string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title;
                 var processInfo = new StringBuilder();
