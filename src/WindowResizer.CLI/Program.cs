@@ -37,7 +37,8 @@ namespace WindowResizer.CLI
                                                 .Prepend(p =>
                                                 {
                                                     AnsiConsole.Write(new FigletText(nameof(WindowResizer)).LeftJustified().Color(Color.Blue));
-                                                    AnsiConsole.MarkupLine("[grey]Default command: resize. You may omit the command name, for example: -i or -w 0 0 800 600.[/]");
+//                                                    AnsiConsole.MarkupLine("[grey]Default command: resize. You may omit the command name, for example: -i or -w 0 0 800 600.[/]");
+                                                    AnsiConsole.MarkupLine("[yellow]Default command: resize. You may omit the command name, for example: -i or -w 0 0 800 600.[/]");
                                                     AnsiConsole.WriteLine();
                                                 })
                              );
