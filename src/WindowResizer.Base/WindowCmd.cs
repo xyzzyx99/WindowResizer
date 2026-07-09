@@ -415,6 +415,10 @@ public static class WindowCmd
         {
             try
             {
+                // If the window is minimized, restore it before measuring its current size.
+                // Direct -w forms with omitted right/bottom keep the current width/height;
+                // measuring while minimized can return a tiny/iconic rectangle.
+                Resizer.RestoreWindowIfMinimized(tp.Handle);
                 var currentRect = Resizer.GetRect(tp.Handle);
                 var targetRect = BuildDirectRect(tp.Handle, currentRect, windowArguments);
                 var placement = Resizer.GetPlacement(tp.Handle);
@@ -489,3 +493,4 @@ public static class WindowCmd
         return p;
     }
 }
+
