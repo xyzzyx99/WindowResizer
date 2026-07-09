@@ -69,6 +69,8 @@ namespace
         HANDLE in = INVALID_HANDLE_VALUE;
         DWORD originalOutMode = 0;
         DWORD originalInMode = 0;
+        CONSOLE_CURSOR_INFO originalCursor{};
+        bool haveOriginalCursor = false;
         bool vtEnabled = false;
         bool altScreen = false;
     };
@@ -287,6 +289,30 @@ namespace
         return true;
     }
 
+    static void HideCharacterCursor(ConsoleState& state)
+    {
+        CONSOLE_CURSOR_INFO cursor{};
+        if (GetConsoleCursorInfo(state.out, &cursor))
+        {
+            if (!state.haveOriginalCursor)
+            {
+                state.originalCursor = cursor;
+                state.haveOriginalCursor = true;
+            }
+
+            cursor.bVisible = FALSE;
+            if (cursor.dwSize < 1)
+                cursor.dwSize = 1;
+            SetConsoleCursorInfo(state.out, &cursor);
+        }
+    }
+
+    static void RestoreCharacterCursor(ConsoleState& state)
+    {
+        if (state.haveOriginalCursor)
+            SetConsoleCursorInfo(state.out, &state.originalCursor);
+    }
+
     static bool EnableVirtualTerminal(ConsoleState& state)
     {
         state.out = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -324,7 +350,8 @@ namespace
     static void EnterVirtualScreen(ConsoleState& state)
     {
         WriteWide(state.out, Esc(L"[?1049h")); // alternate screen buffer
-        WriteWide(state.out, Esc(L"[?25l"));   // hide cursor
+        WriteWide(state.out, Esc(L"[?25l"));   // hide VT cursor
+        HideCharacterCursor(state);             // hide Win32 console cursor too
         WriteWide(state.out, Esc(L"[?7l"));    // disable auto-wrap; prevents row joining in Windows Terminal
         WriteWide(state.out, Esc(L"[2J"));     // clear screen
         WriteWide(state.out, Esc(L"[H"));      // home
@@ -337,6 +364,7 @@ namespace
         {
             WriteWide(state.out, Esc(L"[0m"));
             WriteWide(state.out, Esc(L"[?7h"));
+            RestoreCharacterCursor(state);
             WriteWide(state.out, Esc(L"[?25h"));
             if (state.altScreen)
                 WriteWide(state.out, Esc(L"[?1049l"));
@@ -555,6 +583,8 @@ namespace
     static void FlushBatch(ConsoleState& state, const std::wstring& batch)
     {
         WriteWide(state.out, batch);
+        WriteWide(state.out, Esc(L"[?25l"));
+        HideCharacterCursor(state);
     }
 
     static std::wstring BuildStatusText(
@@ -781,7 +811,6 @@ namespace
 
         while (running)
         {
-            int oldSelectedIndex = selectedIndex;
             int w = 0;
             int h = 0;
             if (GetVisibleSize(state.out, w, h))
@@ -822,7 +851,7 @@ namespace
             }
             else if (selectionDirty || selectedIndex != lastSelectedIndex)
             {
-                RenderSelectionDelta(state, rows, oldSelectedIndex, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
+                RenderSelectionDelta(state, rows, lastSelectedIndex, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
                 selectionDirty = false;
             }
 
