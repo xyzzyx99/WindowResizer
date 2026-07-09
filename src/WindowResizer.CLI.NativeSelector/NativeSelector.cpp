@@ -307,6 +307,15 @@ namespace
         }
     }
 
+    static void ForceHideCursor(ConsoleState& state)
+    {
+        // Windows Terminal can re-show the text cursor after a resize.
+        // Re-apply both VT and Win32 cursor hiding whenever the render loop wakes.
+        if (state.out != INVALID_HANDLE_VALUE)
+            WriteWide(state.out, Esc(L"[?25l"));
+        HideCharacterCursor(state);
+    }
+
     static void RestoreCharacterCursor(ConsoleState& state)
     {
         if (state.haveOriginalCursor)
@@ -350,8 +359,7 @@ namespace
     static void EnterVirtualScreen(ConsoleState& state)
     {
         WriteWide(state.out, Esc(L"[?1049h")); // alternate screen buffer
-        WriteWide(state.out, Esc(L"[?25l"));   // hide VT cursor
-        HideCharacterCursor(state);             // hide Win32 console cursor too
+        ForceHideCursor(state);                 // hide VT and Win32 console cursor
         WriteWide(state.out, Esc(L"[?7l"));    // disable auto-wrap; prevents row joining in Windows Terminal
         WriteWide(state.out, Esc(L"[2J"));     // clear screen
         WriteWide(state.out, Esc(L"[H"));      // home
@@ -583,8 +591,7 @@ namespace
     static void FlushBatch(ConsoleState& state, const std::wstring& batch)
     {
         WriteWide(state.out, batch);
-        WriteWide(state.out, Esc(L"[?25l"));
-        HideCharacterCursor(state);
+        ForceHideCursor(state);
     }
 
     static std::wstring BuildStatusText(
@@ -855,6 +862,10 @@ namespace
                 selectionDirty = false;
             }
 
+            ForceHideCursor(state);
+
+            ForceHideCursor(state);
+
             lastVirtualTop = virtualTop;
             lastVirtualLeft = virtualLeft;
             lastSelectedIndex = selectedIndex;
@@ -871,6 +882,7 @@ namespace
                 if (eventRecord.EventType == WINDOW_BUFFER_SIZE_EVENT)
                 {
                     fullDirty = true;
+                    ForceHideCursor(state);
                     continue;
                 }
 
@@ -990,4 +1002,6 @@ int __stdcall SelectWindowFromRows(const NativeSelectorRow* rows, int rowCount, 
         return -1;
     }
 }
+
+
 
