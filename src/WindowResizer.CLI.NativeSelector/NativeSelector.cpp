@@ -1,4 +1,4 @@
-﻿#ifndef UNICODE
+#ifndef UNICODE
 #define UNICODE
 #endif
 #ifndef _UNICODE
@@ -453,8 +453,8 @@ namespace
 
     static int MaxRenderedCellWidth(const std::vector<Row>& rows)
     {
-        int maxWidth = CellWidth(L"Keyboard: Up/Down move  PgUp/PgDn page  Home/End  Left/Right pan  Enter select  Esc cancel");
-        maxWidth = std::max(maxWidth, CellWidth(L"Select 999 of 999. Click moves selection  Double click selects  Wheel moves row"));
+        int maxWidth = CellWidth(L" Keyboard: Up/Down move  PgUp/PgDn page  Home/End  Left/Right pan  Enter select  Esc cancel");
+        maxWidth = std::max(maxWidth, CellWidth(L" Select 999 of 999. Click moves selection  Double click selects  Wheel moves row"));
 
         for (const Row& row : rows)
         {
@@ -741,7 +741,7 @@ namespace
         int total = static_cast<int>(rows.size());
         int oneBased = total <= 0 ? 0 : ClampInt(selectedIndex + 1, 1, total);
 
-        return L"Select " + std::to_wstring(oneBased) + L" of " + std::to_wstring(total) +
+        return L" Select " + std::to_wstring(oneBased) + L" of " + std::to_wstring(total) +
             L". Click moves selection  Double click selects  Wheel moves row";
     }
 
@@ -816,7 +816,7 @@ namespace
         batch.reserve(static_cast<size_t>(visibleWidth) * static_cast<size_t>(std::max(visibleHeight, 1)) * 2);
 
         (void)virtualLeft;
-        AppendPlainLine(batch, 0, visibleWidth, L"Keyboard: Up/Down move  PgUp/PgDn page  Home/End  Left/Right pan  Enter select  Esc cancel", Style::Status, true);
+        AppendPlainLine(batch, 0, visibleWidth, L" Keyboard: Up/Down move  PgUp/PgDn page  Home/End  Left/Right pan  Enter select  Esc cancel", Style::Status, true);
 
         int listTop = HeaderRows();
         int listHeight = std::max(0, visibleHeight - HeaderRows() - StatusRows());
