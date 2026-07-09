@@ -41,7 +41,7 @@ public static class WindowCmd
 
         if (!resizeAllProcesses)
         {
-            targets = targets.Where(i => i.ProcessName.Equals(process, StringComparison.OrdinalIgnoreCase)).ToList();
+            targets = targets.Where(i => ProcessNameMatches(i.ProcessName, process)).ToList();
         }
 
         if (!string.IsNullOrEmpty(title))
@@ -170,7 +170,7 @@ public static class WindowCmd
 
         if (!string.IsNullOrWhiteSpace(process))
         {
-            targets = targets.Where(i => i.ProcessName.Equals(process, StringComparison.OrdinalIgnoreCase)).ToList();
+            targets = targets.Where(i => ProcessNameMatches(i.ProcessName, process)).ToList();
         }
 
         Regex? titleRegex = null;
@@ -326,6 +326,12 @@ public static class WindowCmd
             processName = string.Empty;
             return false;
         }
+    }
+
+    private static bool ProcessNameMatches(string processName, string? processFilter)
+    {
+        return !string.IsNullOrWhiteSpace(processFilter) &&
+               processName.IndexOf(processFilter, StringComparison.OrdinalIgnoreCase) >= 0;
     }
 
     private static int GetProcessId(IntPtr handle)

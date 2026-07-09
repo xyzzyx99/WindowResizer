@@ -52,7 +52,7 @@ namespace WindowResizer.CLI.Commands
                 "--process",
                 "-p"
             },
-            description: "Process name, use foreground process if omitted.")
+            description: "Process name partial match, for example -p note matches notepad.exe. Uses the foreground process if omitted.")
         {
             IsRequired = false;
             AllowMultipleArgumentsPerToken = false;
