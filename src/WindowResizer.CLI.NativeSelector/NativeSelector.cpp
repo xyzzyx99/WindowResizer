@@ -410,12 +410,12 @@ namespace
 
     static int HeaderRows()
     {
-        return 0;
+        return 3;
     }
 
     static int StatusRows()
     {
-        return 0;
+        return 1;
     }
 
     static std::wstring CleanOneLine(const wchar_t* text)
@@ -453,7 +453,8 @@ namespace
 
     static int MaxRenderedCellWidth(const std::vector<Row>& rows)
     {
-        int maxWidth = 0;
+        int maxWidth = CellWidth(L"NATIVE DLL selector VT virtual buffer");
+        maxWidth = std::max(maxWidth, CellWidth(L"Up/Down move  PgUp/PgDn  Home/End  Left/Right pan  Enter/double-click select  Esc cancel"));
 
         for (const Row& row : rows)
         {
@@ -730,13 +731,16 @@ namespace
         int hiddenWidth,
         int hiddenHeight)
     {
-        return
-            L" NATIVE DLL selector VT partial+mouse | rows=" + std::to_wstring(rows.size()) +
-            L" | visible=" + std::to_wstring(visibleWidth) + L"x" + std::to_wstring(visibleHeight) +
-            L" | hidden dwSize=" + std::to_wstring(hiddenWidth) + L"x" + std::to_wstring(hiddenHeight) +
-            L" | left=" + std::to_wstring(virtualLeft) +
-            L" top=" + std::to_wstring(virtualTop) +
-            L" selected=" + std::to_wstring(selectedIndex);
+        (void)rows;
+        (void)selectedIndex;
+        (void)virtualTop;
+        (void)virtualLeft;
+        (void)visibleWidth;
+        (void)visibleHeight;
+        (void)hiddenWidth;
+        (void)hiddenHeight;
+
+        return L" Enter/double-click: select   Esc: cancel   Up/Down or wheel: move   Left/Right: pan";
     }
 
     static void AppendRowBySourceIndex(
@@ -769,16 +773,27 @@ namespace
     }
 
     static void AppendStatusLine(
-        std::wstring&,
-        const std::vector<Row>&,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int,
-        int)
+        std::wstring& batch,
+        const std::vector<Row>& rows,
+        int selectedIndex,
+        int virtualTop,
+        int virtualLeft,
+        int visibleWidth,
+        int visibleHeight,
+        int hiddenWidth,
+        int hiddenHeight)
     {
+        if (visibleHeight <= 0)
+            return;
+
+        int statusY = visibleHeight - 1;
+        AppendPlainLine(
+            batch,
+            statusY,
+            visibleWidth,
+            BuildStatusText(rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight),
+            Style::Status,
+            true);
     }
 
     static void RenderVirtualBuffer(
@@ -797,6 +812,11 @@ namespace
 
         std::wstring batch;
         batch.reserve(static_cast<size_t>(visibleWidth) * static_cast<size_t>(std::max(visibleHeight, 1)) * 2);
+
+        (void)virtualLeft;
+        AppendPlainLine(batch, 0, visibleWidth, L"Select a window to resize", Style::Header, false);
+        AppendPlainLine(batch, 1, visibleWidth, L"Keyboard: Up/Down move  PgUp/PgDn page  Home/End  Left/Right pan  Enter select  Esc cancel", Style::Header, false);
+        AppendPlainLine(batch, 2, visibleWidth, L"Mouse: click moves selection  double-click selects  wheel moves one row", Style::Header, false);
 
         int listTop = HeaderRows();
         int listHeight = std::max(0, visibleHeight - HeaderRows() - StatusRows());

@@ -110,11 +110,7 @@ namespace WindowResizer.CLI.Commands
             {
                 return nativeSelectedWindow;
             }
-
-            Output.Error("NATIVE SELECTOR DIAGNOSTIC: using managed C# selector fallback.");
-
-            Output.Error("NATIVE SELECTOR DIAGNOSTIC: native selector returned false; using managed C# selector fallback.");
-            if (!Console.IsInputRedirected)
+if (!Console.IsInputRedirected)
             {
                 Console.ReadKey(true);
             }
@@ -166,10 +162,7 @@ namespace WindowResizer.CLI.Commands
                         IsTopForProcess = target.IsTopForProcess ? 1 : 0,
                         DisplayText = FormatNativeSelectorRow(target)
                     }).ToArray();
-
-                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: passing {rows.Length} rows to native selector.");
-
-                    int selectedIndex;
+int selectedIndex;
                     var result = SelectWindowFromRows(rows, rows.Length, 0, out selectedIndex);
 
                     if (result == 0)
@@ -183,14 +176,11 @@ namespace WindowResizer.CLI.Commands
                         selectedWindow = targets[selectedIndex];
                         return true;
                     }
-
-                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector returned {result}, selectedIndex={selectedIndex}; falling back to managed selector.");
-                    return false;
+return false;
                 }
                 catch (DllNotFoundException ex)
                 {
-                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector DLL not found: {ex.Message}");
-                    canceled = true;
+canceled = true;
                     if (!Console.IsInputRedirected)
                     {
                         Console.ReadKey(true);
@@ -199,8 +189,7 @@ namespace WindowResizer.CLI.Commands
                 }
                 catch (EntryPointNotFoundException ex)
                 {
-                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector entry point not found: {ex.Message}");
-                    canceled = true;
+canceled = true;
                     if (!Console.IsInputRedirected)
                     {
                         Console.ReadKey(true);
@@ -209,8 +198,7 @@ namespace WindowResizer.CLI.Commands
                 }
                 catch (BadImageFormatException ex)
                 {
-                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector DLL has the wrong architecture: {ex.Message}");
-                    canceled = true;
+canceled = true;
                     if (!Console.IsInputRedirected)
                     {
                         Console.ReadKey(true);
@@ -219,8 +207,7 @@ namespace WindowResizer.CLI.Commands
                 }
                 catch (Exception ex)
                 {
-                    Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector call failed with {ex.GetType().Name}: {ex.Message}");
-                    return false;
+return false;
                 }
             }
 
