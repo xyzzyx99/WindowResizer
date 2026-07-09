@@ -1,6 +1,12 @@
-﻿#define UNICODE
+﻿#ifndef UNICODE
+#define UNICODE
+#endif
+#ifndef _UNICODE
 #define _UNICODE
+#endif
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 
 #include <windows.h>
 #include <algorithm>
@@ -272,21 +278,19 @@ namespace
         case Style::Header:
             return L"\x1b[0;1m";
         case Style::Selected:
-            return L"\x1b[30;47m";
         case Style::SelectedMarker:
-            return L"\x1b[97;47m";
+        case Style::ProcessNameSelected:
+        case Style::TopProcessSelected:
+        case Style::HandleSelected:
+            // Highlight foreground should be the terminal-background-like color on grey,
+            // not the per-segment green/yellow/gray colors.
+            return L"\x1b[30;47m";
         case Style::ProcessName:
             return L"\x1b[32m";
-        case Style::ProcessNameSelected:
-            return L"\x1b[32;47m";
         case Style::TopProcess:
             return L"\x1b[33m";
-        case Style::TopProcessSelected:
-            return L"\x1b[33;47m";
         case Style::Handle:
             return L"\x1b[90m";
-        case Style::HandleSelected:
-            return L"\x1b[90;47m";
         case Style::Status:
             return L"\x1b[37;44m";
         case Style::Normal:
@@ -463,13 +467,23 @@ namespace
 
     static size_t FindProcessEnd(const std::wstring& text)
     {
-        size_t processEnd = text.find(L" [");
         size_t bar = text.find(L" | ");
+        size_t searchEnd = (bar == std::wstring::npos) ? text.size() : bar;
 
-        if (processEnd == std::wstring::npos || (bar != std::wstring::npos && processEnd > bar))
-            processEnd = (bar == std::wstring::npos) ? text.size() : bar;
+        size_t spacedBracket = text.find(L" [");
+        if (spacedBracket != std::wstring::npos && spacedBracket < searchEnd)
+            return spacedBracket; // stop before the space and '['; both stay normal color
 
-        return processEnd;
+        size_t bracket = text.find(L'[');
+        if (bracket != std::wstring::npos && bracket < searchEnd)
+        {
+            if (bracket > 0 && text[bracket - 1] == L' ')
+                return bracket - 1;
+
+            return bracket;
+        }
+
+        return searchEnd;
     }
 
     static std::wstring LowerString(std::wstring value)
@@ -537,16 +551,22 @@ namespace
             processEnd = body.size();
 
         // Only the process name itself is colored green/yellow.
-        // The process-info brackets and PID stay in the normal row color.
+        // Any separator space, '[' around PID, PID text, and ']' use normal color.
         if (processEnd > 0)
             segments.push_back({ body.substr(0, processEnd), row.isTop ? top : process });
 
         size_t pos = processEnd;
 
-        if (pos + 1 < body.size() && body[pos] == L' ' && body[pos + 1] == L'[')
+        if (pos < body.size() && body[pos] == L' ')
         {
-            segments.push_back({ L" [", normal });
-            pos += 2;
+            segments.push_back({ body.substr(pos, 1), normal });
+            ++pos;
+        }
+
+        if (pos < body.size() && body[pos] == L'[')
+        {
+            segments.push_back({ body.substr(pos, 1), normal });
+            ++pos;
 
             size_t close = body.find(L']', pos);
             size_t infoEnd = (close == std::wstring::npos) ? body.size() : close;
@@ -570,7 +590,7 @@ namespace
 
             if (close != std::wstring::npos)
             {
-                segments.push_back({ L"]", normal });
+                segments.push_back({ body.substr(close, 1), normal });
                 pos = close + 1;
             }
             else
@@ -1032,7 +1052,7 @@ namespace
                     if (mouse.dwEventFlags == MOUSE_WHEELED)
                     {
                         short wheelDelta = static_cast<short>((mouse.dwButtonState >> 16) & 0xFFFF);
-                        int wheelStep = std::max(1, std::min(5, listHeight / 3));
+                        int wheelStep = 1;
                         int beforeWheel = selectedIndex;
 
                         if (wheelDelta > 0)
