@@ -273,6 +273,9 @@ namespace
 
     static const wchar_t* StyleCode(Style style)
     {
+        const wchar_t* yellow = L"\x1b[33m";
+        const wchar_t* green = L"\x1b[32m";
+
         switch (style)
         {
         case Style::Header:
@@ -286,9 +289,9 @@ namespace
             // not the per-segment green/yellow/gray colors.
             return L"\x1b[30;47m";
         case Style::ProcessName:
-            return L"\x1b[32m";
+            return yellow; //L"\x1b[32m";
         case Style::TopProcess:
-            return L"\x1b[33m";
+            return green; //L"\x1b[33m";
         case Style::Handle:
             return L"\x1b[90m";
         case Style::Status:
