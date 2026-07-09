@@ -26,6 +26,10 @@
 #define ENABLE_EXTENDED_FLAGS 0x0080
 #endif
 
+#ifndef ENABLE_MOUSE_INPUT
+#define ENABLE_MOUSE_INPUT 0x0010
+#endif
+
 struct NativeSelectorRow
 {
     int Sequence;
@@ -43,8 +47,12 @@ namespace
         Header,
         Selected,
         SelectedMarker,
+        ProcessName,
+        ProcessNameSelected,
         TopProcess,
         TopProcessSelected,
+        Handle,
+        HandleSelected,
         Status
     };
 
@@ -263,10 +271,18 @@ namespace
             return L"\x1b[30;47m";
         case Style::SelectedMarker:
             return L"\x1b[97;47m";
+        case Style::ProcessName:
+            return L"\x1b[32m";
+        case Style::ProcessNameSelected:
+            return L"\x1b[32;47m";
         case Style::TopProcess:
             return L"\x1b[33m";
         case Style::TopProcessSelected:
             return L"\x1b[33;47m";
+        case Style::Handle:
+            return L"\x1b[90m";
+        case Style::HandleSelected:
+            return L"\x1b[90;47m";
         case Style::Status:
             return L"\x1b[37;44m";
         case Style::Normal:
@@ -309,8 +325,6 @@ namespace
 
     static void ForceHideCursor(ConsoleState& state)
     {
-        // Windows Terminal can re-show the text cursor after a resize.
-        // Re-apply both VT and Win32 cursor hiding whenever the render loop wakes.
         if (state.out != INVALID_HANDLE_VALUE)
             WriteWide(state.out, Esc(L"[?25l"));
         HideCharacterCursor(state);
@@ -348,6 +362,7 @@ namespace
 
         DWORD inMode = state.originalInMode;
         inMode |= ENABLE_WINDOW_INPUT;
+        inMode |= ENABLE_MOUSE_INPUT;
         inMode |= ENABLE_EXTENDED_FLAGS;
         inMode &= ~ENABLE_QUICK_EDIT_MODE;
         SetConsoleMode(state.in, inMode);
@@ -431,7 +446,7 @@ namespace
     static int MaxRenderedCellWidth(const std::vector<Row>& rows)
     {
         int maxWidth = CellWidth(L"NATIVE DLL selector VT virtual buffer");
-        maxWidth = std::max(maxWidth, CellWidth(L"Up/Down move  PgUp/PgDn  Home/End  Left/Right pan  Enter select  Esc cancel"));
+        maxWidth = std::max(maxWidth, CellWidth(L"Up/Down move  PgUp/PgDn  Home/End  Left/Right pan  Enter/double-click select  Esc cancel"));
 
         for (const Row& row : rows)
         {
@@ -442,41 +457,103 @@ namespace
         return std::min(32000, maxWidth + 8);
     }
 
+    static size_t FindProcessEnd(const std::wstring& text)
+    {
+        size_t processEnd = text.find(L" [");
+        size_t bar = text.find(L" | ");
+
+        if (processEnd == std::wstring::npos || (bar != std::wstring::npos && processEnd > bar))
+            processEnd = (bar == std::wstring::npos) ? text.size() : bar;
+
+        return processEnd;
+    }
+
+    static std::wstring LowerString(std::wstring value)
+    {
+        for (wchar_t& ch : value)
+            ch = static_cast<wchar_t>(std::towlower(ch));
+        return value;
+    }
+
+    static std::wstring ProcessNameKey(const Row& row)
+    {
+        size_t end = FindProcessEnd(row.text);
+        return LowerString(row.text.substr(0, end));
+    }
+
+    static int FirstAlnumProcessCharLower(const Row& row)
+    {
+        std::wstring process = row.text.substr(0, FindProcessEnd(row.text));
+        return FirstAlnumCellCharLower(process);
+    }
+
+    static size_t FindHandleStart(const std::wstring& text)
+    {
+        size_t pos = text.rfind(L" (0x");
+        if (pos != std::wstring::npos)
+            return pos + 1; // include the bracket, but not the preceding separator space
+
+        pos = text.rfind(L" [0x");
+        if (pos != std::wstring::npos)
+            return pos + 1; // include the bracket, but not the preceding separator space
+
+        pos = text.rfind(L" | hwnd ");
+        if (pos != std::wstring::npos)
+            return pos + 3; // keep the column separator normal; gray the handle column
+
+        pos = text.rfind(L" hwnd 0x");
+        if (pos != std::wstring::npos)
+            return pos + 1;
+
+        return std::wstring::npos;
+    }
+
     static std::vector<Segment> BuildRowSegments(const Row& row, bool selected)
     {
         std::vector<Segment> segments;
         segments.push_back({ selected ? L"> " : L"  ", selected ? Style::SelectedMarker : Style::Normal });
 
         Style normal = selected ? Style::Selected : Style::Normal;
+        Style process = selected ? Style::ProcessNameSelected : Style::ProcessName;
         Style top = selected ? Style::TopProcessSelected : Style::TopProcess;
+        Style handle = selected ? Style::HandleSelected : Style::Handle;
 
-        if (!row.isTop)
+        size_t handleStart = FindHandleStart(row.text);
+        std::wstring body = row.text;
+        std::wstring handleText;
+
+        if (handleStart != std::wstring::npos && handleStart < row.text.size())
         {
-            segments.push_back({ row.text, normal });
-            return segments;
+            body = row.text.substr(0, handleStart);
+            handleText = row.text.substr(handleStart);
         }
 
-        size_t processEnd = row.text.find(L" [");
-        size_t bar = row.text.find(L" | ");
-        if (processEnd == std::wstring::npos || (bar != std::wstring::npos && processEnd > bar))
-            processEnd = (bar == std::wstring::npos) ? row.text.size() : bar;
+        size_t processEnd = FindProcessEnd(body);
+        if (processEnd > body.size())
+            processEnd = body.size();
 
         if (processEnd > 0)
-            segments.push_back({ row.text.substr(0, processEnd), top });
+            segments.push_back({ body.substr(0, processEnd), row.isTop ? top : process });
 
         size_t pos = processEnd;
-        size_t topPos = row.text.find(L"Top", pos);
 
-        if (topPos != std::wstring::npos)
+        if (row.isTop)
         {
-            if (topPos > pos)
-                segments.push_back({ row.text.substr(pos, topPos - pos), normal });
-            segments.push_back({ row.text.substr(topPos, 3), top });
-            pos = topPos + 3;
+            size_t topPos = body.find(L"Top", pos);
+            if (topPos != std::wstring::npos)
+            {
+                if (topPos > pos)
+                    segments.push_back({ body.substr(pos, topPos - pos), normal });
+                segments.push_back({ body.substr(topPos, 3), top });
+                pos = topPos + 3;
+            }
         }
 
-        if (pos < row.text.size())
-            segments.push_back({ row.text.substr(pos), normal });
+        if (pos < body.size())
+            segments.push_back({ body.substr(pos), normal });
+
+        if (!handleText.empty())
+            segments.push_back({ handleText, handle });
 
         return segments;
     }
@@ -605,7 +682,7 @@ namespace
         int hiddenHeight)
     {
         return
-            L" NATIVE DLL selector VT partial | rows=" + std::to_wstring(rows.size()) +
+            L" NATIVE DLL selector VT partial+mouse | rows=" + std::to_wstring(rows.size()) +
             L" | visible=" + std::to_wstring(visibleWidth) + L"x" + std::to_wstring(visibleHeight) +
             L" | hidden dwSize=" + std::to_wstring(hiddenWidth) + L"x" + std::to_wstring(hiddenHeight) +
             L" | left=" + std::to_wstring(virtualLeft) +
@@ -684,7 +761,7 @@ namespace
         batch.reserve(static_cast<size_t>(visibleWidth) * static_cast<size_t>(std::max(visibleHeight, 1)) * 2);
 
         AppendPlainLine(batch, 0, visibleWidth, L"NATIVE DLL selector VT virtual buffer", Style::Header, false);
-        AppendPlainLine(batch, 1, visibleWidth, L"Up/Down move  PgUp/PgDn  Home/End  Left/Right pan  Enter select  Esc cancel", Style::Header, false);
+        AppendPlainLine(batch, 1, visibleWidth, L"Up/Down move  PgUp/PgDn  Home/End  Left/Right pan  Enter/double-click select  Esc cancel", Style::Header, false);
 
         std::wstring ruler;
         for (int i = 0; i < visibleWidth; ++i)
@@ -768,17 +845,51 @@ namespace
 
         int count = static_cast<int>(rows.size());
         int start = (selectedIndex + 1) % count;
+        std::wstring currentProcess = ProcessNameKey(rows[static_cast<size_t>(ClampInt(selectedIndex, 0, count - 1))]);
 
+        // Cycle by process group, not by every window row of the same process.
         for (int offset = 0; offset < count; ++offset)
         {
             int index = (start + offset) % count;
-            int first = FirstAlnumCellCharLower(rows[static_cast<size_t>(index)].text);
-            if (first == target)
+            const Row& candidate = rows[static_cast<size_t>(index)];
+            if (FirstAlnumProcessCharLower(candidate) != target)
+                continue;
+
+            if (ProcessNameKey(candidate) == currentProcess)
+                continue;
+
+            selectedIndex = index;
+            return;
+        }
+
+        // If the current row is not a process beginning with the typed letter, still allow
+        // jumping into the first matching process group.
+        if (FirstAlnumProcessCharLower(rows[static_cast<size_t>(ClampInt(selectedIndex, 0, count - 1))]) != target)
+        {
+            for (int offset = 0; offset < count; ++offset)
             {
-                selectedIndex = index;
-                return;
+                int index = (start + offset) % count;
+                if (FirstAlnumProcessCharLower(rows[static_cast<size_t>(index)]) == target)
+                {
+                    selectedIndex = index;
+                    return;
+                }
             }
         }
+    }
+
+    static bool TryGetListRowFromMouse(int mouseY, int virtualTop, int visibleHeight, int rowCount, int& sourceRow)
+    {
+        int listHeight = std::max(0, visibleHeight - HeaderRows() - StatusRows());
+        if (mouseY < HeaderRows() || mouseY >= HeaderRows() + listHeight)
+            return false;
+
+        int index = virtualTop + (mouseY - HeaderRows());
+        if (index < 0 || index >= rowCount)
+            return false;
+
+        sourceRow = index;
+        return true;
     }
 
     static int SelectWithVirtualTerminal(const NativeSelectorRow* nativeRows, int rowCount, int initialIndex, int* selectedIndexOut)
@@ -864,8 +975,6 @@ namespace
 
             ForceHideCursor(state);
 
-            ForceHideCursor(state);
-
             lastVirtualTop = virtualTop;
             lastVirtualLeft = virtualLeft;
             lastSelectedIndex = selectedIndex;
@@ -883,6 +992,33 @@ namespace
                 {
                     fullDirty = true;
                     ForceHideCursor(state);
+                    continue;
+                }
+
+                if (eventRecord.EventType == MOUSE_EVENT)
+                {
+                    const MOUSE_EVENT_RECORD& mouse = eventRecord.Event.MouseEvent;
+                    int sourceRow = -1;
+                    if (TryGetListRowFromMouse(mouse.dwMousePosition.Y, virtualTop, visibleHeight, static_cast<int>(rows.size()), sourceRow))
+                    {
+                        bool leftButton = (mouse.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
+                        if (leftButton && mouse.dwEventFlags == DOUBLE_CLICK)
+                        {
+                            selectedIndex = sourceRow;
+                            accepted = true;
+                            running = false;
+                            break;
+                        }
+
+                        if (leftButton && mouse.dwEventFlags == 0)
+                        {
+                            if (selectedIndex != sourceRow)
+                            {
+                                selectedIndex = sourceRow;
+                                selectionDirty = true;
+                            }
+                        }
+                    }
                     continue;
                 }
 
@@ -1002,6 +1138,4 @@ int __stdcall SelectWindowFromRows(const NativeSelectorRow* rows, int rowCount, 
         return -1;
     }
 }
-
-
 
