@@ -410,7 +410,7 @@ namespace
 
     static int HeaderRows()
     {
-        return 3;
+        return 1;
     }
 
     static int StatusRows()
@@ -453,8 +453,8 @@ namespace
 
     static int MaxRenderedCellWidth(const std::vector<Row>& rows)
     {
-        int maxWidth = CellWidth(L"NATIVE DLL selector VT virtual buffer");
-        maxWidth = std::max(maxWidth, CellWidth(L"Up/Down move  PgUp/PgDn  Home/End  Left/Right pan  Enter/double-click select  Esc cancel"));
+        int maxWidth = CellWidth(L"Keyboard: Up/Down move  PgUp/PgDn page  Home/End  Left/Right pan  Enter select  Esc cancel");
+        maxWidth = std::max(maxWidth, CellWidth(L"Select 999 of 999. Click moves selection  Double click selects  Wheel moves row"));
 
         for (const Row& row : rows)
         {
@@ -731,8 +731,6 @@ namespace
         int hiddenWidth,
         int hiddenHeight)
     {
-        (void)rows;
-        (void)selectedIndex;
         (void)virtualTop;
         (void)virtualLeft;
         (void)visibleWidth;
@@ -740,7 +738,11 @@ namespace
         (void)hiddenWidth;
         (void)hiddenHeight;
 
-        return L" Enter/double-click: select   Esc: cancel   Up/Down or wheel: move   Left/Right: pan";
+        int total = static_cast<int>(rows.size());
+        int oneBased = total <= 0 ? 0 : ClampInt(selectedIndex + 1, 1, total);
+
+        return L"Select " + std::to_wstring(oneBased) + L" of " + std::to_wstring(total) +
+            L". Click moves selection  Double click selects  Wheel moves row";
     }
 
     static void AppendRowBySourceIndex(
@@ -814,9 +816,7 @@ namespace
         batch.reserve(static_cast<size_t>(visibleWidth) * static_cast<size_t>(std::max(visibleHeight, 1)) * 2);
 
         (void)virtualLeft;
-        AppendPlainLine(batch, 0, visibleWidth, L"Select a window to resize", Style::Header, false);
-        AppendPlainLine(batch, 1, visibleWidth, L"Keyboard: Up/Down move  PgUp/PgDn page  Home/End  Left/Right pan  Enter select  Esc cancel", Style::Header, false);
-        AppendPlainLine(batch, 2, visibleWidth, L"Mouse: click moves selection  double-click selects  wheel moves one row", Style::Header, false);
+        AppendPlainLine(batch, 0, visibleWidth, L"Keyboard: Up/Down move  PgUp/PgDn page  Home/End  Left/Right pan  Enter select  Esc cancel", Style::Status, true);
 
         int listTop = HeaderRows();
         int listHeight = std::max(0, visibleHeight - HeaderRows() - StatusRows());
