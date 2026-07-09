@@ -121,6 +121,38 @@ if (!Console.IsInputRedirected)
             }
         }
 
+
+
+    private static T RunWithScanningDots<T>(System.Func<T> action)
+    {
+        System.Console.Write("Scanning processes");
+
+        var done = new System.Threading.ManualResetEventSlim(false);
+        var thread = new System.Threading.Thread(() =>
+        {
+            while (!done.Wait(System.TimeSpan.FromSeconds(1)))
+            {
+                System.Console.Write(".");
+            }
+        });
+
+        thread.IsBackground = true;
+        thread.Start();
+
+        try
+        {
+            return action();
+        }
+        finally
+        {
+            done.Set();
+            thread.Join();
+            System.Console.WriteLine();
+            done.Dispose();
+        }
+    }
+
+
         private static class NativeConsoleSelector
         {
             [DllImport("WindowResizer.Selector.Native.dll", CharSet = CharSet.Unicode, CallingConvention = CallingConvention.StdCall, EntryPoint = "SelectWindowFromRows")]
@@ -209,37 +241,7 @@ canceled = true;
                 {
 return false;
                 }
-            }
-
-
-    private static T RunWithScanningDots<T>(System.Func<T> action)
-    {
-        System.Console.Write("Scanning processes");
-
-        var done = new System.Threading.ManualResetEventSlim(false);
-        var thread = new System.Threading.Thread(() =>
-        {
-            while (!done.Wait(System.TimeSpan.FromSeconds(1)))
-            {
-                System.Console.Write(".");
-            }
-        });
-
-        thread.IsBackground = true;
-        thread.Start();
-
-        try
-        {
-            return action();
-        }
-        finally
-        {
-            done.Set();
-            thread.Join();
-            System.Console.WriteLine();
-            done.Dispose();
-        }
-    }            private static string FormatNativeSelectorRow(WindowCmd.TargetWindow target)
+            }            private static string FormatNativeSelectorRow(WindowCmd.TargetWindow target)
             {
                 var title = string.IsNullOrWhiteSpace(target.Title) ? "(no title)" : target.Title;
                 var processInfo = new StringBuilder();
