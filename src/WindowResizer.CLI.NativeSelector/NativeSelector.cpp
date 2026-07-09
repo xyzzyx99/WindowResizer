@@ -1,4 +1,4 @@
-#ifndef UNICODE
+﻿#ifndef UNICODE
 #define UNICODE
 #endif
 #ifndef _UNICODE
@@ -46,7 +46,7 @@ struct NativeSelectorRow
     int ProcessId;
     intptr_t WindowHandle;
     int IsTopForProcess;
-    const wchar_t* DisplayText;
+    const wchar_t *DisplayText;
 };
 
 namespace
@@ -95,17 +95,19 @@ namespace
 
     static int ClampInt(int value, int lo, int hi)
     {
-        if (value < lo) return lo;
-        if (value > hi) return hi;
+        if (value < lo)
+            return lo;
+        if (value > hi)
+            return hi;
         return value;
     }
 
-    static int RectWidth(const SMALL_RECT& rect)
+    static int RectWidth(const SMALL_RECT &rect)
     {
         return rect.Right - rect.Left + 1;
     }
 
-    static int RectHeight(const SMALL_RECT& rect)
+    static int RectHeight(const SMALL_RECT &rect)
     {
         return rect.Bottom - rect.Top + 1;
     }
@@ -120,7 +122,7 @@ namespace
         return ch >= 0xDC00 && ch <= 0xDFFF;
     }
 
-    static unsigned int DecodeCodePoint(const std::wstring& text, size_t index, size_t& units)
+    static unsigned int DecodeCodePoint(const std::wstring &text, size_t index, size_t &units)
     {
         units = 1;
         unsigned int cp = static_cast<unsigned int>(text[index]);
@@ -138,30 +140,28 @@ namespace
 
     static bool IsCombiningMark(unsigned int cp)
     {
-        return
-            (cp >= 0x0300 && cp <= 0x036F) ||
-            (cp >= 0x1AB0 && cp <= 0x1AFF) ||
-            (cp >= 0x1DC0 && cp <= 0x1DFF) ||
-            (cp >= 0x20D0 && cp <= 0x20FF) ||
-            (cp >= 0xFE20 && cp <= 0xFE2F) ||
-            (cp >= 0xFE00 && cp <= 0xFE0F) ||
-            cp == 0x200D;
+        return (cp >= 0x0300 && cp <= 0x036F) ||
+               (cp >= 0x1AB0 && cp <= 0x1AFF) ||
+               (cp >= 0x1DC0 && cp <= 0x1DFF) ||
+               (cp >= 0x20D0 && cp <= 0x20FF) ||
+               (cp >= 0xFE20 && cp <= 0xFE2F) ||
+               (cp >= 0xFE00 && cp <= 0xFE0F) ||
+               cp == 0x200D;
     }
 
     static bool IsWideCodePoint(unsigned int cp)
     {
-        return
-            (cp >= 0x1100 && cp <= 0x115F) ||
-            (cp >= 0x2329 && cp <= 0x232A) ||
-            (cp >= 0x2E80 && cp <= 0xA4CF) ||
-            (cp >= 0xAC00 && cp <= 0xD7A3) ||
-            (cp >= 0xF900 && cp <= 0xFAFF) ||
-            (cp >= 0xFE10 && cp <= 0xFE19) ||
-            (cp >= 0xFE30 && cp <= 0xFE6F) ||
-            (cp >= 0xFF00 && cp <= 0xFF60) ||
-            (cp >= 0xFFE0 && cp <= 0xFFE6) ||
-            (cp >= 0x1F300 && cp <= 0x1FAFF) ||
-            (cp >= 0x20000 && cp <= 0x3FFFD);
+        return (cp >= 0x1100 && cp <= 0x115F) ||
+               (cp >= 0x2329 && cp <= 0x232A) ||
+               (cp >= 0x2E80 && cp <= 0xA4CF) ||
+               (cp >= 0xAC00 && cp <= 0xD7A3) ||
+               (cp >= 0xF900 && cp <= 0xFAFF) ||
+               (cp >= 0xFE10 && cp <= 0xFE19) ||
+               (cp >= 0xFE30 && cp <= 0xFE6F) ||
+               (cp >= 0xFF00 && cp <= 0xFF60) ||
+               (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+               (cp >= 0x1F300 && cp <= 0x1FAFF) ||
+               (cp >= 0x20000 && cp <= 0x3FFFD);
     }
 
     static int CodePointCellWidth(unsigned int cp)
@@ -175,10 +175,10 @@ namespace
         return IsWideCodePoint(cp) ? 2 : 1;
     }
 
-    static int CellWidth(const std::wstring& text)
+    static int CellWidth(const std::wstring &text)
     {
         int cells = 0;
-        for (size_t i = 0; i < text.size(); )
+        for (size_t i = 0; i < text.size();)
         {
             size_t units = 1;
             unsigned int cp = DecodeCodePoint(text, i, units);
@@ -188,7 +188,7 @@ namespace
         return cells;
     }
 
-    static std::wstring SliceByCells(const std::wstring& text, int startCell, int maxCells)
+    static std::wstring SliceByCells(const std::wstring &text, int startCell, int maxCells)
     {
         if (maxCells <= 0)
             return L"";
@@ -198,7 +198,7 @@ namespace
         int usedCells = 0;
         bool started = false;
 
-        for (size_t i = 0; i < text.size(); )
+        for (size_t i = 0; i < text.size();)
         {
             size_t units = 1;
             unsigned int cp = DecodeCodePoint(text, i, units);
@@ -241,7 +241,7 @@ namespace
         return result;
     }
 
-    static int FirstAlnumCellCharLower(const std::wstring& text)
+    static int FirstAlnumCellCharLower(const std::wstring &text)
     {
         for (wchar_t ch : text)
         {
@@ -251,14 +251,14 @@ namespace
         return 0;
     }
 
-    static void WriteWide(HANDLE out, const std::wstring& text)
+    static void WriteWide(HANDLE out, const std::wstring &text)
     {
         DWORD written = 0;
         if (!text.empty())
             WriteConsoleW(out, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr);
     }
 
-    static std::wstring Esc(const wchar_t* suffix)
+    static std::wstring Esc(const wchar_t *suffix)
     {
         std::wstring s;
         s.push_back(0x1B);
@@ -271,10 +271,10 @@ namespace
         return Esc((L"[" + std::to_wstring(row0 + 1) + L";" + std::to_wstring(col0 + 1) + L"H").c_str());
     }
 
-    static const wchar_t* StyleCode(Style style)
+    static const wchar_t *StyleCode(Style style)
     {
-        const wchar_t* yellow = L"\x1b[33m";
-        const wchar_t* green = L"\x1b[32m";
+        const wchar_t *yellow = L"\x1b[33m";
+        const wchar_t *green = L"\x1b[32m";
 
         switch (style)
         {
@@ -289,9 +289,9 @@ namespace
             // not the per-segment green/yellow/gray colors.
             return L"\x1b[30;47m";
         case Style::ProcessName:
-            return yellow; //L"\x1b[32m";
+            return yellow; // L"\x1b[32m";
         case Style::TopProcess:
-            return green; //L"\x1b[33m";
+            return green; // L"\x1b[33m";
         case Style::Handle:
             return L"\x1b[90m";
         case Style::Status:
@@ -302,7 +302,7 @@ namespace
         }
     }
 
-    static bool GetVisibleSize(HANDLE out, int& width, int& height)
+    static bool GetVisibleSize(HANDLE out, int &width, int &height)
     {
         CONSOLE_SCREEN_BUFFER_INFO info{};
         if (!GetConsoleScreenBufferInfo(out, &info))
@@ -311,12 +311,14 @@ namespace
         width = RectWidth(info.srWindow);
         height = RectHeight(info.srWindow);
 
-        if (width < 1) width = 1;
-        if (height < 1) height = 1;
+        if (width < 1)
+            width = 1;
+        if (height < 1)
+            height = 1;
         return true;
     }
 
-    static void HideCharacterCursor(ConsoleState& state)
+    static void HideCharacterCursor(ConsoleState &state)
     {
         CONSOLE_CURSOR_INFO cursor{};
         if (GetConsoleCursorInfo(state.out, &cursor))
@@ -334,20 +336,20 @@ namespace
         }
     }
 
-    static void ForceHideCursor(ConsoleState& state)
+    static void ForceHideCursor(ConsoleState &state)
     {
         if (state.out != INVALID_HANDLE_VALUE)
             WriteWide(state.out, Esc(L"[?25l"));
         HideCharacterCursor(state);
     }
 
-    static void RestoreCharacterCursor(ConsoleState& state)
+    static void RestoreCharacterCursor(ConsoleState &state)
     {
         if (state.haveOriginalCursor)
             SetConsoleCursorInfo(state.out, &state.originalCursor);
     }
 
-    static bool EnableVirtualTerminal(ConsoleState& state)
+    static bool EnableVirtualTerminal(ConsoleState &state)
     {
         state.out = GetStdHandle(STD_OUTPUT_HANDLE);
         state.in = GetStdHandle(STD_INPUT_HANDLE);
@@ -382,17 +384,17 @@ namespace
         return true;
     }
 
-    static void EnterVirtualScreen(ConsoleState& state)
+    static void EnterVirtualScreen(ConsoleState &state)
     {
         WriteWide(state.out, Esc(L"[?1049h")); // alternate screen buffer
-        ForceHideCursor(state);                 // hide VT and Win32 console cursor
+        ForceHideCursor(state);                // hide VT and Win32 console cursor
         WriteWide(state.out, Esc(L"[?7l"));    // disable auto-wrap; prevents row joining in Windows Terminal
         WriteWide(state.out, Esc(L"[2J"));     // clear screen
         WriteWide(state.out, Esc(L"[H"));      // home
         state.altScreen = true;
     }
 
-    static void LeaveVirtualScreen(ConsoleState& state)
+    static void LeaveVirtualScreen(ConsoleState &state)
     {
         if (state.out != INVALID_HANDLE_VALUE)
         {
@@ -421,13 +423,13 @@ namespace
         return 1;
     }
 
-    static std::wstring CleanOneLine(const wchar_t* text)
+    static std::wstring CleanOneLine(const wchar_t *text)
     {
         if (text == nullptr)
             return L"";
 
         std::wstring result(text);
-        for (wchar_t& ch : result)
+        for (wchar_t &ch : result)
         {
             if (ch == L'\r' || ch == L'\n' || ch == L'\t')
                 ch = L' ';
@@ -435,7 +437,7 @@ namespace
         return result;
     }
 
-    static std::vector<Row> BuildRows(const NativeSelectorRow* nativeRows, int rowCount)
+    static std::vector<Row> BuildRows(const NativeSelectorRow *nativeRows, int rowCount)
     {
         std::vector<Row> rows;
         rows.reserve(static_cast<size_t>(std::max(0, rowCount)));
@@ -454,21 +456,38 @@ namespace
         return rows;
     }
 
-    static int MaxRenderedCellWidth(const std::vector<Row>& rows)
+    static int MaxItemCellWidth(const std::vector<Row> &rows)
     {
-        int maxWidth = CellWidth(L" Keyboard: Up/Down move  PgUp/PgDn page  Home/End  Left/Right pan  Enter select  Esc cancel");
-        maxWidth = std::max(maxWidth, CellWidth(L" Select 999 of 999. Click moves selection  Double click selects  Wheel moves row"));
+        int maxWidth = 0;
 
-        for (const Row& row : rows)
+        for (const Row &row : rows)
         {
             int width = CellWidth(L"> ") + CellWidth(row.text);
             maxWidth = std::max(maxWidth, width);
         }
 
-        return std::min(32000, maxWidth + 8);
+        return std::min(32000, maxWidth);
     }
 
-    static size_t FindProcessEnd(const std::wstring& text)
+    static int MaxRenderedCellWidth(const std::vector<Row> &rows)
+    {
+        int maxWidth = CellWidth(L" Keyboard: Up/Down move  PgUp/PgDn page  Home/End  Left/Right pan  Enter select  Esc cancel");
+        maxWidth = std::max(maxWidth, CellWidth(L" Select 999 of 999. Click moves selection  Double click selects  Wheel moves row"));
+        maxWidth = std::max(maxWidth, MaxItemCellWidth(rows));
+
+        return std::min(32000, maxWidth + 10);
+    }
+
+    static int MaxPannableLeft(int maxItemWidth, int visibleWidth)
+    {
+        // Stop right-panning once the gap between the longest item and the
+        // right edge would be 11 cells or more. A maximum gap of 10 cells is
+        // allowed. This is based on the longest item in the full list, not on
+        // only the items currently visible on screen.
+        const int maxRightGapCells = 10;
+        return std::max(0, maxItemWidth + maxRightGapCells - visibleWidth);
+    }
+    static size_t FindProcessEnd(const std::wstring &text)
     {
         size_t bar = text.find(L" | ");
         size_t searchEnd = (bar == std::wstring::npos) ? text.size() : bar;
@@ -491,24 +510,24 @@ namespace
 
     static std::wstring LowerString(std::wstring value)
     {
-        for (wchar_t& ch : value)
+        for (wchar_t &ch : value)
             ch = static_cast<wchar_t>(std::towlower(ch));
         return value;
     }
 
-    static std::wstring ProcessNameKey(const Row& row)
+    static std::wstring ProcessNameKey(const Row &row)
     {
         size_t end = FindProcessEnd(row.text);
         return LowerString(row.text.substr(0, end));
     }
 
-    static int FirstAlnumProcessCharLower(const Row& row)
+    static int FirstAlnumProcessCharLower(const Row &row)
     {
         std::wstring process = row.text.substr(0, FindProcessEnd(row.text));
         return FirstAlnumCellCharLower(process);
     }
 
-    static size_t FindHandleStart(const std::wstring& text)
+    static size_t FindHandleStart(const std::wstring &text)
     {
         size_t pos = text.rfind(L" (0x");
         if (pos != std::wstring::npos)
@@ -529,10 +548,10 @@ namespace
         return std::wstring::npos;
     }
 
-    static std::vector<Segment> BuildRowSegments(const Row& row, bool selected)
+    static std::vector<Segment> BuildRowSegments(const Row &row, bool selected)
     {
         std::vector<Segment> segments;
-        segments.push_back({ selected ? L"> " : L"  ", selected ? Style::SelectedMarker : Style::Normal });
+        segments.push_back({selected ? L"> " : L"  ", selected ? Style::SelectedMarker : Style::Normal});
 
         Style normal = selected ? Style::Selected : Style::Normal;
         Style process = selected ? Style::ProcessNameSelected : Style::ProcessName;
@@ -556,19 +575,19 @@ namespace
         // Only the process name itself is colored green/yellow.
         // Any separator space, '[' around PID, PID text, and ']' use normal color.
         if (processEnd > 0)
-            segments.push_back({ body.substr(0, processEnd), row.isTop ? top : process });
+            segments.push_back({body.substr(0, processEnd), row.isTop ? top : process});
 
         size_t pos = processEnd;
 
         if (pos < body.size() && body[pos] == L' ')
         {
-            segments.push_back({ body.substr(pos, 1), normal });
+            segments.push_back({body.substr(pos, 1), normal});
             ++pos;
         }
 
         if (pos < body.size() && body[pos] == L'[')
         {
-            segments.push_back({ body.substr(pos, 1), normal });
+            segments.push_back({body.substr(pos, 1), normal});
             ++pos;
 
             size_t close = body.find(L']', pos);
@@ -578,22 +597,22 @@ namespace
             if (topPos != std::wstring::npos && topPos < infoEnd)
             {
                 if (topPos > pos)
-                    segments.push_back({ body.substr(pos, topPos - pos), normal });
+                    segments.push_back({body.substr(pos, topPos - pos), normal});
 
-                segments.push_back({ body.substr(topPos, 3), top });
+                segments.push_back({body.substr(topPos, 3), top});
 
                 size_t afterTop = topPos + 3;
                 if (afterTop < infoEnd)
-                    segments.push_back({ body.substr(afterTop, infoEnd - afterTop), normal });
+                    segments.push_back({body.substr(afterTop, infoEnd - afterTop), normal});
             }
             else if (infoEnd > pos)
             {
-                segments.push_back({ body.substr(pos, infoEnd - pos), normal });
+                segments.push_back({body.substr(pos, infoEnd - pos), normal});
             }
 
             if (close != std::wstring::npos)
             {
-                segments.push_back({ body.substr(close, 1), normal });
+                segments.push_back({body.substr(close, 1), normal});
                 pos = close + 1;
             }
             else
@@ -603,15 +622,15 @@ namespace
         }
 
         if (pos < body.size())
-            segments.push_back({ body.substr(pos), normal });
+            segments.push_back({body.substr(pos), normal});
 
         if (!handleText.empty())
-            segments.push_back({ handleText, handle });
+            segments.push_back({handleText, handle});
 
         return segments;
     }
 
-    static void AppendMoveTo(std::wstring& batch, int row0, int col0)
+    static void AppendMoveTo(std::wstring &batch, int row0, int col0)
     {
         batch.push_back(0x1B);
         batch += L"[";
@@ -621,23 +640,23 @@ namespace
         batch += L"H";
     }
 
-    static void AppendClearLine(std::wstring& batch)
+    static void AppendClearLine(std::wstring &batch)
     {
         batch += L"\x1b[2K";
     }
 
-    static void AppendStyle(std::wstring& batch, Style style)
+    static void AppendStyle(std::wstring &batch, Style style)
     {
         batch += StyleCode(style);
     }
 
-    static void AppendSpaces(std::wstring& batch, int count)
+    static void AppendSpaces(std::wstring &batch, int count)
     {
         if (count > 0)
             batch.append(static_cast<size_t>(count), L' ');
     }
 
-    static void AppendStyledLine(std::wstring& batch, int row0, int width, const std::vector<Segment>& segments, int virtualLeft, bool selected)
+    static void AppendStyledLine(std::wstring &batch, int row0, int width, const std::vector<Segment> &segments, int virtualLeft, bool selected)
     {
         AppendMoveTo(batch, row0, 0);
         AppendClearLine(batch);
@@ -647,7 +666,7 @@ namespace
         Style currentStyle = Style::Normal;
         bool hasStyle = false;
 
-        for (const Segment& segment : segments)
+        for (const Segment &segment : segments)
         {
             int segmentCells = CellWidth(segment.text);
             int segmentStart = globalCell;
@@ -692,7 +711,7 @@ namespace
         batch += L"\x1b[0m";
     }
 
-    static void AppendPlainLine(std::wstring& batch, int row0, int width, const std::wstring& text, Style style, bool fillLine)
+    static void AppendPlainLine(std::wstring &batch, int row0, int width, const std::wstring &text, Style style, bool fillLine)
     {
         AppendMoveTo(batch, row0, 0);
         AppendClearLine(batch);
@@ -711,21 +730,21 @@ namespace
         batch += L"\x1b[0m";
     }
 
-    static void AppendClearOnlyLine(std::wstring& batch, int row0)
+    static void AppendClearOnlyLine(std::wstring &batch, int row0)
     {
         AppendMoveTo(batch, row0, 0);
         AppendClearLine(batch);
         batch += L"\x1b[0m";
     }
 
-    static void FlushBatch(ConsoleState& state, const std::wstring& batch)
+    static void FlushBatch(ConsoleState &state, const std::wstring &batch)
     {
         WriteWide(state.out, batch);
         ForceHideCursor(state);
     }
 
     static std::wstring BuildStatusText(
-        const std::vector<Row>& rows,
+        const std::vector<Row> &rows,
         int selectedIndex,
         int virtualTop,
         int virtualLeft,
@@ -750,12 +769,12 @@ namespace
             selectedText.insert(0, totalText.size() - selectedText.size(), L' ');
 
         return L" Select " + selectedText + L" of " + totalText +
-            L". Click moves selection  Double click selects  Wheel moves row";
+               L". Click moves selection  Double click selects  Wheel moves row";
     }
 
     static void AppendRowBySourceIndex(
-        std::wstring& batch,
-        const std::vector<Row>& rows,
+        std::wstring &batch,
+        const std::vector<Row> &rows,
         int sourceRow,
         int virtualTop,
         int virtualLeft,
@@ -783,8 +802,8 @@ namespace
     }
 
     static void AppendStatusLine(
-        std::wstring& batch,
-        const std::vector<Row>& rows,
+        std::wstring &batch,
+        const std::vector<Row> &rows,
         int selectedIndex,
         int virtualTop,
         int virtualLeft,
@@ -807,8 +826,8 @@ namespace
     }
 
     static void RenderVirtualBuffer(
-        ConsoleState& state,
-        const std::vector<Row>& rows,
+        ConsoleState &state,
+        const std::vector<Row> &rows,
         int selectedIndex,
         int virtualTop,
         int virtualLeft,
@@ -850,8 +869,8 @@ namespace
     }
 
     static void RenderSelectionDelta(
-        ConsoleState& state,
-        const std::vector<Row>& rows,
+        ConsoleState &state,
+        const std::vector<Row> &rows,
         int oldSelectedIndex,
         int selectedIndex,
         int virtualTop,
@@ -876,7 +895,7 @@ namespace
         FlushBatch(state, batch);
     }
 
-    static void ReadAllInput(ConsoleState& state, std::vector<INPUT_RECORD>& events)
+    static void ReadAllInput(ConsoleState &state, std::vector<INPUT_RECORD> &events)
     {
         DWORD count = 0;
         if (!GetNumberOfConsoleInputEvents(state.in, &count) || count == 0)
@@ -892,7 +911,7 @@ namespace
         events.resize(read);
     }
 
-    static void JumpToProcessLetter(const std::vector<Row>& rows, int& selectedIndex, wchar_t typed)
+    static void JumpToProcessLetter(const std::vector<Row> &rows, int &selectedIndex, wchar_t typed)
     {
         if (rows.empty())
             return;
@@ -909,7 +928,7 @@ namespace
         for (int offset = 0; offset < count; ++offset)
         {
             int index = (start + offset) % count;
-            const Row& candidate = rows[static_cast<size_t>(index)];
+            const Row &candidate = rows[static_cast<size_t>(index)];
             if (FirstAlnumProcessCharLower(candidate) != target)
                 continue;
 
@@ -936,7 +955,7 @@ namespace
         }
     }
 
-    static bool TryGetListRowFromMouse(int mouseY, int virtualTop, int visibleHeight, int rowCount, int& sourceRow)
+    static bool TryGetListRowFromMouse(int mouseY, int virtualTop, int visibleHeight, int rowCount, int &sourceRow)
     {
         int listHeight = std::max(0, visibleHeight - HeaderRows() - StatusRows());
         if (mouseY < HeaderRows() || mouseY >= HeaderRows() + listHeight)
@@ -950,7 +969,7 @@ namespace
         return true;
     }
 
-    static int SelectWithVirtualTerminal(const NativeSelectorRow* nativeRows, int rowCount, int initialIndex, int* selectedIndexOut)
+    static int SelectWithVirtualTerminal(const NativeSelectorRow *nativeRows, int rowCount, int initialIndex, int *selectedIndexOut)
     {
         if (nativeRows == nullptr || rowCount <= 0 || selectedIndexOut == nullptr)
             return -2;
@@ -968,6 +987,7 @@ namespace
         int visibleHeight = 25;
         GetVisibleSize(state.out, visibleWidth, visibleHeight);
 
+        const int maxItemWidth = MaxItemCellWidth(rows);
         int hiddenWidth = std::max(visibleWidth, MaxRenderedCellWidth(rows));
         int hiddenHeight = std::max(visibleHeight, HeaderRows() + static_cast<int>(rows.size()) + StatusRows());
 
@@ -1005,7 +1025,9 @@ namespace
 
             int listHeight = std::max(1, visibleHeight - HeaderRows() - StatusRows());
             int maxTop = std::max(0, static_cast<int>(rows.size()) - listHeight);
-            int maxLeft = std::max(0, hiddenWidth - visibleWidth);
+            int maxLeft = std::min(
+                std::max(0, hiddenWidth - visibleWidth),
+                MaxPannableLeft(maxItemWidth, visibleWidth));
 
             selectedIndex = ClampInt(selectedIndex, 0, static_cast<int>(rows.size()) - 1);
             if (selectedIndex < virtualTop)
@@ -1044,7 +1066,7 @@ namespace
             std::vector<INPUT_RECORD> events;
             ReadAllInput(state, events);
 
-            for (const INPUT_RECORD& eventRecord : events)
+            for (const INPUT_RECORD &eventRecord : events)
             {
                 if (eventRecord.EventType == WINDOW_BUFFER_SIZE_EVENT)
                 {
@@ -1055,7 +1077,7 @@ namespace
 
                 if (eventRecord.EventType == MOUSE_EVENT)
                 {
-                    const MOUSE_EVENT_RECORD& mouse = eventRecord.Event.MouseEvent;
+                    const MOUSE_EVENT_RECORD &mouse = eventRecord.Event.MouseEvent;
 
                     if (mouse.dwEventFlags == MOUSE_WHEELED)
                     {
@@ -1101,7 +1123,7 @@ namespace
                 if (eventRecord.EventType != KEY_EVENT)
                     continue;
 
-                const KEY_EVENT_RECORD& key = eventRecord.Event.KeyEvent;
+                const KEY_EVENT_RECORD &key = eventRecord.Event.KeyEvent;
                 if (!key.bKeyDown)
                     continue;
 
@@ -1200,8 +1222,7 @@ namespace
     }
 }
 
-extern "C" __declspec(dllexport)
-int __stdcall SelectWindowFromRows(const NativeSelectorRow* rows, int rowCount, int initialIndex, int* selectedIndexOut)
+extern "C" __declspec(dllexport) int __stdcall SelectWindowFromRows(const NativeSelectorRow *rows, int rowCount, int initialIndex, int *selectedIndexOut)
 {
     try
     {
@@ -1214,4 +1235,3 @@ int __stdcall SelectWindowFromRows(const NativeSelectorRow* rows, int rowCount, 
         return -1;
     }
 }
-
