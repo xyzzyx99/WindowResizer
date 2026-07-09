@@ -114,7 +114,6 @@ namespace WindowResizer.CLI.Commands
             Output.Error("NATIVE SELECTOR DIAGNOSTIC: using managed C# selector fallback.");
 
             Output.Error("NATIVE SELECTOR DIAGNOSTIC: native selector returned false; using managed C# selector fallback.");
-            Console.Error.WriteLine("NATIVE SELECTOR DIAGNOSTIC: press any key to continue into the managed C# selector...");
             if (!Console.IsInputRedirected)
             {
                 Console.ReadKey(true);
@@ -192,7 +191,6 @@ namespace WindowResizer.CLI.Commands
                 {
                     Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector DLL not found: {ex.Message}");
                     canceled = true;
-                    Console.Error.WriteLine("NATIVE SELECTOR DIAGNOSTIC: press any key to exit without entering the C# selector...");
                     if (!Console.IsInputRedirected)
                     {
                         Console.ReadKey(true);
@@ -203,7 +201,6 @@ namespace WindowResizer.CLI.Commands
                 {
                     Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector entry point not found: {ex.Message}");
                     canceled = true;
-                    Console.Error.WriteLine("NATIVE SELECTOR DIAGNOSTIC: press any key to exit without entering the C# selector...");
                     if (!Console.IsInputRedirected)
                     {
                         Console.ReadKey(true);
@@ -214,7 +211,6 @@ namespace WindowResizer.CLI.Commands
                 {
                     Output.Error($"NATIVE SELECTOR DIAGNOSTIC: native selector DLL has the wrong architecture: {ex.Message}");
                     canceled = true;
-                    Console.Error.WriteLine("NATIVE SELECTOR DIAGNOSTIC: press any key to exit without entering the C# selector...");
                     if (!Console.IsInputRedirected)
                     {
                         Console.ReadKey(true);
@@ -4071,5 +4067,6 @@ namespace WindowResizer.CLI.Commands
         }
     }
 }
+
 
 

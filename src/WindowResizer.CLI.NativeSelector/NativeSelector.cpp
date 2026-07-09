@@ -410,12 +410,12 @@ namespace
 
     static int HeaderRows()
     {
-        return 3;
+        return 0;
     }
 
     static int StatusRows()
     {
-        return 1;
+        return 0;
     }
 
     static std::wstring CleanOneLine(const wchar_t* text)
@@ -453,8 +453,7 @@ namespace
 
     static int MaxRenderedCellWidth(const std::vector<Row>& rows)
     {
-        int maxWidth = CellWidth(L"NATIVE DLL selector VT virtual buffer");
-        maxWidth = std::max(maxWidth, CellWidth(L"Up/Down move  PgUp/PgDn  Home/End  Left/Right pan  Enter/double-click select  Esc cancel"));
+        int maxWidth = 0;
 
         for (const Row& row : rows)
         {
@@ -770,27 +769,16 @@ namespace
     }
 
     static void AppendStatusLine(
-        std::wstring& batch,
-        const std::vector<Row>& rows,
-        int selectedIndex,
-        int virtualTop,
-        int virtualLeft,
-        int visibleWidth,
-        int visibleHeight,
-        int hiddenWidth,
-        int hiddenHeight)
+        std::wstring&,
+        const std::vector<Row>&,
+        int,
+        int,
+        int,
+        int,
+        int,
+        int,
+        int)
     {
-        if (visibleHeight <= 0)
-            return;
-
-        int statusY = visibleHeight - 1;
-        AppendPlainLine(
-            batch,
-            statusY,
-            visibleWidth,
-            BuildStatusText(rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight),
-            Style::Status,
-            true);
     }
 
     static void RenderVirtualBuffer(
@@ -809,14 +797,6 @@ namespace
 
         std::wstring batch;
         batch.reserve(static_cast<size_t>(visibleWidth) * static_cast<size_t>(std::max(visibleHeight, 1)) * 2);
-
-        AppendPlainLine(batch, 0, visibleWidth, L"NATIVE DLL selector VT virtual buffer", Style::Header, false);
-        AppendPlainLine(batch, 1, visibleWidth, L"Up/Down move  PgUp/PgDn  Home/End  Left/Right pan  Enter/double-click select  Esc cancel", Style::Header, false);
-
-        std::wstring ruler;
-        for (int i = 0; i < visibleWidth; ++i)
-            ruler.push_back(static_cast<wchar_t>(L'0' + ((virtualLeft + i) % 10)));
-        AppendPlainLine(batch, 2, visibleWidth, ruler, Style::Header, false);
 
         int listTop = HeaderRows();
         int listHeight = std::max(0, visibleHeight - HeaderRows() - StatusRows());
