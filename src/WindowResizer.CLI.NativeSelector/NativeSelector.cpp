@@ -30,6 +30,10 @@
 #define ENABLE_MOUSE_INPUT 0x0010
 #endif
 
+#ifndef MOUSE_WHEELED
+#define MOUSE_WHEELED 0x0004
+#endif
+
 struct NativeSelectorRow
 {
     int Sequence;
@@ -532,20 +536,46 @@ namespace
         if (processEnd > body.size())
             processEnd = body.size();
 
+        // Only the process name itself is colored green/yellow.
+        // The process-info brackets and PID stay in the normal row color.
         if (processEnd > 0)
             segments.push_back({ body.substr(0, processEnd), row.isTop ? top : process });
 
         size_t pos = processEnd;
 
-        if (row.isTop)
+        if (pos + 1 < body.size() && body[pos] == L' ' && body[pos + 1] == L'[')
         {
-            size_t topPos = body.find(L"Top", pos);
-            if (topPos != std::wstring::npos)
+            segments.push_back({ L" [", normal });
+            pos += 2;
+
+            size_t close = body.find(L']', pos);
+            size_t infoEnd = (close == std::wstring::npos) ? body.size() : close;
+            size_t topPos = row.isTop ? body.find(L"Top", pos) : std::wstring::npos;
+
+            if (topPos != std::wstring::npos && topPos < infoEnd)
             {
                 if (topPos > pos)
                     segments.push_back({ body.substr(pos, topPos - pos), normal });
+
                 segments.push_back({ body.substr(topPos, 3), top });
-                pos = topPos + 3;
+
+                size_t afterTop = topPos + 3;
+                if (afterTop < infoEnd)
+                    segments.push_back({ body.substr(afterTop, infoEnd - afterTop), normal });
+            }
+            else if (infoEnd > pos)
+            {
+                segments.push_back({ body.substr(pos, infoEnd - pos), normal });
+            }
+
+            if (close != std::wstring::npos)
+            {
+                segments.push_back({ L"]", normal });
+                pos = close + 1;
+            }
+            else
+            {
+                pos = infoEnd;
             }
         }
 
@@ -998,6 +1028,24 @@ namespace
                 if (eventRecord.EventType == MOUSE_EVENT)
                 {
                     const MOUSE_EVENT_RECORD& mouse = eventRecord.Event.MouseEvent;
+
+                    if (mouse.dwEventFlags == MOUSE_WHEELED)
+                    {
+                        short wheelDelta = static_cast<short>((mouse.dwButtonState >> 16) & 0xFFFF);
+                        int wheelStep = std::max(1, std::min(5, listHeight / 3));
+                        int beforeWheel = selectedIndex;
+
+                        if (wheelDelta > 0)
+                            selectedIndex = std::max(0, selectedIndex - wheelStep);
+                        else if (wheelDelta < 0)
+                            selectedIndex = std::min(static_cast<int>(rows.size()) - 1, selectedIndex + wheelStep);
+
+                        if (selectedIndex != beforeWheel)
+                            selectionDirty = true;
+
+                        continue;
+                    }
+
                     int sourceRow = -1;
                     if (TryGetListRowFromMouse(mouse.dwMousePosition.Y, virtualTop, visibleHeight, static_cast<int>(rows.size()), sourceRow))
                     {
