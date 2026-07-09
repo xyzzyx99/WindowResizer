@@ -11,6 +11,7 @@
 #include <windows.h>
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cwctype>
 #include <string>
 #include <vector>
@@ -33,6 +34,14 @@ struct Row
     std::wstring Text;
 };
 
+struct HiddenCache
+{
+    int Width = 0;
+    int Height = 0;
+    int SelectedIndex = -1;
+    std::vector<CHAR_INFO> Cells;
+};
+
 static HANDLE gOriginalOut = INVALID_HANDLE_VALUE;
 static HANDLE gVisibleOut = INVALID_HANDLE_VALUE;
 static HANDLE gHiddenOut = INVALID_HANDLE_VALUE;
@@ -41,14 +50,14 @@ static DWORD gOriginalInputMode = 0;
 static CONSOLE_CURSOR_INFO gOriginalCursor{};
 static WORD gNormalAttr = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE;
 static WORD gSelectedAttr = BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_BLUE;
+static WORD gSelectedMarkerAttr = BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_BLUE | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE | FOREGROUND_INTENSITY;
 static WORD gTopAttr = FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-static COORD gVisibleFixedSize{0, 0};
 
 static const int kHeaderRows = 3;
 static const int kBodyTop = 3;
 static const int kFooterRows = 1;
 static const int kMinVisibleWidth = 1;
-static const int kMinVisibleHeight = 5;
+static const int kMinVisibleHeight = 1;
 
 static int ClampInt(int v, int lo, int hi)
 {
@@ -77,6 +86,11 @@ static WORD BackgroundBits(WORD attr)
     return attr & (BACKGROUND_BLUE | BACKGROUND_GREEN | BACKGROUND_RED | BACKGROUND_INTENSITY);
 }
 
+static WORD ForegroundBits(WORD attr)
+{
+    return attr & (FOREGROUND_BLUE | FOREGROUND_GREEN | FOREGROUND_RED | FOREGROUND_INTENSITY);
+}
+
 static WORD ForegroundFromBackground(WORD attr)
 {
     WORD bg = BackgroundBits(attr);
@@ -95,8 +109,8 @@ static void SetupAttributes()
         gNormalAttr = info.wAttributes;
 
     WORD selectedFg = ForegroundFromBackground(gNormalAttr);
-    // If the terminal background is black, use black text on grey, matching the intended inverse-like C# look.
     gSelectedAttr = (BACKGROUND_RED | BACKGROUND_GREEN | BACKGROUND_BLUE) | selectedFg;
+    gSelectedMarkerAttr = BackgroundBits(gSelectedAttr) | ForegroundBits(gNormalAttr) | FOREGROUND_INTENSITY;
     gTopAttr = BackgroundBits(gNormalAttr) | FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
 }
 
@@ -156,6 +170,20 @@ static int EstimatedCellWidth(const std::wstring& s)
     return cells;
 }
 
+static CHAR_INFO MakeCell(wchar_t ch, WORD attr)
+{
+    CHAR_INFO c{};
+    c.Char.UnicodeChar = ch;
+    c.Attributes = attr;
+    return c;
+}
+
+static void FillCell(CHAR_INFO& c, wchar_t ch, WORD attr)
+{
+    c.Char.UnicodeChar = ch;
+    c.Attributes = attr;
+}
+
 static void FillLine(HANDLE h, short y, short width, WORD attr)
 {
     if (width <= 0)
@@ -199,6 +227,9 @@ static void WriteRowWithTopHighlight(HANDLE h, short y, int hiddenWidth, const R
     std::wstring line = selected ? L"> " : L"  ";
     line += row.Text;
     WriteAt(h, 0, y, line, baseAttr);
+
+    if (selected)
+        WriteAt(h, 0, y, L">", gSelectedMarkerAttr);
 
     if (!selected && row.IsTopForProcess)
     {
@@ -255,20 +286,6 @@ static int RequiredHiddenHeight(const std::vector<Row>& rows, int visibleHeight)
     return std::max(visibleHeight, kBodyTop + static_cast<int>(rows.size()) + kFooterRows + 1);
 }
 
-static bool SetBufferSizeAtLeast(HANDLE h, int width, int height)
-{
-    CONSOLE_SCREEN_BUFFER_INFO info{};
-    if (!GetInfo(h, info))
-        return false;
-
-    int newWidth = std::max<int>(info.dwSize.X, width);
-    int newHeight = std::max<int>(info.dwSize.Y, height);
-    COORD size{static_cast<SHORT>(newWidth), static_cast<SHORT>(newHeight)};
-    if (info.dwSize.X == size.X && info.dwSize.Y == size.Y)
-        return true;
-    return SetConsoleScreenBufferSize(h, size) != FALSE;
-}
-
 static HANDLE CreateBuffer()
 {
     return CreateConsoleScreenBuffer(
@@ -316,6 +333,72 @@ static void RenderHidden(HANDLE hidden, int hiddenWidth, int hiddenHeight, const
     }
 }
 
+static HiddenCache BuildHiddenCache(HANDLE hidden, int hiddenWidth, int hiddenHeight, const std::vector<Row>& rows, int selectedIndex)
+{
+    HiddenCache cache;
+    cache.Width = hiddenWidth;
+    cache.Height = hiddenHeight;
+    cache.SelectedIndex = selectedIndex;
+    cache.Cells.assign(static_cast<size_t>(hiddenWidth) * static_cast<size_t>(hiddenHeight), MakeCell(L' ', gNormalAttr));
+
+    COORD size{static_cast<SHORT>(hiddenWidth), static_cast<SHORT>(hiddenHeight)};
+    SetConsoleScreenBufferSize(hidden, size);
+
+    SMALL_RECT win{};
+    win.Left = 0;
+    win.Top = 0;
+    win.Right = static_cast<SHORT>(std::min(hiddenWidth, 120) - 1);
+    win.Bottom = static_cast<SHORT>(std::min(hiddenHeight, 30) - 1);
+    SetConsoleWindowInfo(hidden, TRUE, &win);
+
+    RenderHidden(hidden, hiddenWidth, hiddenHeight, rows, selectedIndex);
+
+    COORD bufferSize{static_cast<SHORT>(hiddenWidth), static_cast<SHORT>(hiddenHeight)};
+    COORD bufferCoord{0, 0};
+    SMALL_RECT source{0, 0, static_cast<SHORT>(hiddenWidth - 1), static_cast<SHORT>(hiddenHeight - 1)};
+    ReadConsoleOutputW(hidden, cache.Cells.data(), bufferSize, bufferCoord, &source);
+
+    return cache;
+}
+
+static bool NormalizeVisibleBufferToWindow(int& visibleWidth, int& visibleHeight)
+{
+    CONSOLE_SCREEN_BUFFER_INFO info{};
+    if (!GetInfo(gVisibleOut, info))
+        return false;
+
+    visibleWidth = std::max(kMinVisibleWidth, RectWidth(info.srWindow));
+    visibleHeight = std::max(kMinVisibleHeight, RectHeight(info.srWindow));
+
+    if (info.dwSize.X < visibleWidth || info.dwSize.Y < visibleHeight)
+    {
+        COORD grow{};
+        grow.X = static_cast<SHORT>(std::max<int>(static_cast<int>(info.dwSize.X), visibleWidth));
+        grow.Y = static_cast<SHORT>(std::max<int>(static_cast<int>(info.dwSize.Y), visibleHeight));
+        SetConsoleScreenBufferSize(gVisibleOut, grow);
+    }
+
+    SMALL_RECT win{};
+    win.Left = 0;
+    win.Top = 0;
+    win.Right = static_cast<SHORT>(visibleWidth - 1);
+    win.Bottom = static_cast<SHORT>(visibleHeight - 1);
+    SetConsoleWindowInfo(gVisibleOut, TRUE, &win);
+
+    COORD exact{};
+    exact.X = static_cast<SHORT>(visibleWidth);
+    exact.Y = static_cast<SHORT>(visibleHeight);
+    SetConsoleScreenBufferSize(gVisibleOut, exact);
+
+    CONSOLE_SCREEN_BUFFER_INFO after{};
+    if (!GetInfo(gVisibleOut, after))
+        return false;
+
+    visibleWidth = std::max(kMinVisibleWidth, RectWidth(after.srWindow));
+    visibleHeight = std::max(kMinVisibleHeight, RectHeight(after.srWindow));
+    return true;
+}
+
 static void PutText(std::vector<CHAR_INFO>& frame, int width, int height, int x, int y, const std::wstring& text, WORD attr)
 {
     if (y < 0 || y >= height)
@@ -325,97 +408,90 @@ static void PutText(std::vector<CHAR_INFO>& frame, int width, int height, int x,
         int xx = x + i;
         if (xx < 0 || xx >= width)
             continue;
-        CHAR_INFO& c = frame[static_cast<size_t>(y) * width + xx];
-        c.Char.UnicodeChar = text[static_cast<size_t>(i)];
-        c.Attributes = attr;
+        CHAR_INFO& c = frame[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(xx)];
+        FillCell(c, text[static_cast<size_t>(i)], attr);
     }
 }
 
-static CHAR_INFO BlankCell(WORD attr)
+static void OverlayFooter(std::vector<CHAR_INFO>& frame, int width, int height, int virtualLeft, int virtualTop, int selectedIndex, int rowCount, const HiddenCache& cache)
 {
-    CHAR_INFO c{};
-    c.Char.UnicodeChar = L' ';
-    c.Attributes = attr;
-    return c;
-}
-
-static bool ReadHiddenRect(HANDLE hidden, std::vector<CHAR_INFO>& target, int targetWidth, int targetHeight,
-    int destX, int destY, int readWidth, int readHeight, int sourceX, int sourceY)
-{
-    if (readWidth <= 0 || readHeight <= 0)
-        return true;
-
-    std::vector<CHAR_INFO> temp(static_cast<size_t>(readWidth) * readHeight, BlankCell(gNormalAttr));
-    COORD size{static_cast<SHORT>(readWidth), static_cast<SHORT>(readHeight)};
-    COORD coord{0, 0};
-    SMALL_RECT src{
-        static_cast<SHORT>(sourceX),
-        static_cast<SHORT>(sourceY),
-        static_cast<SHORT>(sourceX + readWidth - 1),
-        static_cast<SHORT>(sourceY + readHeight - 1)};
-
-    if (!ReadConsoleOutputW(hidden, temp.data(), size, coord, &src))
-        return false;
-
-    for (int y = 0; y < readHeight; ++y)
-    {
-        int ty = destY + y;
-        if (ty < 0 || ty >= targetHeight)
-            continue;
-        for (int x = 0; x < readWidth; ++x)
-        {
-            int tx = destX + x;
-            if (tx < 0 || tx >= targetWidth)
-                continue;
-            target[static_cast<size_t>(ty) * targetWidth + tx] = temp[static_cast<size_t>(y) * readWidth + x];
-        }
-    }
-
-    return true;
-}
-
-static bool CopyViewport(HANDLE hidden, HANDLE visible, int hiddenWidth, int hiddenHeight,
-    int virtualLeft, int virtualTop, int selectedIndex, int rowCount)
-{
-    CONSOLE_SCREEN_BUFFER_INFO info{};
-    if (!GetInfo(visible, info))
-        return false;
-
-    int visibleWidth = std::max(kMinVisibleWidth, RectWidth(info.srWindow));
-    int visibleHeight = std::max(kMinVisibleHeight, RectHeight(info.srWindow));
-    if (visibleWidth <= 0 || visibleHeight <= 0)
-        return false;
-
-    std::vector<CHAR_INFO> frame(static_cast<size_t>(visibleWidth) * visibleHeight, BlankCell(gNormalAttr));
-
-    int headerRows = std::min(kHeaderRows, visibleHeight);
-    ReadHiddenRect(hidden, frame, visibleWidth, visibleHeight, 0, 0, visibleWidth, headerRows, 0, 0);
-
-    int footerRow = visibleHeight - 1;
-    int bodyHeight = std::max(0, visibleHeight - kBodyTop - 1);
-    if (bodyHeight > 0)
-    {
-        int maxReadHeight = std::max(0, std::min(bodyHeight, hiddenHeight - (kBodyTop + virtualTop)));
-        ReadHiddenRect(hidden, frame, visibleWidth, visibleHeight, 0, kBodyTop,
-            visibleWidth, maxReadHeight, virtualLeft, kBodyTop + virtualTop);
-    }
+    if (width <= 0 || height <= 0)
+        return;
 
     WORD footerAttr = BackgroundBits(gNormalAttr) | FOREGROUND_GREEN | FOREGROUND_INTENSITY;
-    for (int x = 0; x < visibleWidth; ++x)
-        frame[static_cast<size_t>(footerRow) * visibleWidth + x] = BlankCell(footerAttr);
+    int y = height - 1;
+    for (int x = 0; x < width; ++x)
+        FillCell(frame[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)], L' ', footerAttr);
 
     std::wstring footer = L"NATIVE DLL selector | rows=" + std::to_wstring(rowCount) +
         L" selected=" + std::to_wstring(selectedIndex) +
         L" left=" + std::to_wstring(virtualLeft) +
-        L" top=" + std::to_wstring(virtualTop);
-    PutText(frame, visibleWidth, visibleHeight, 0, footerRow, footer, footerAttr);
+        L" top=" + std::to_wstring(virtualTop) +
+        L" | cache=" + std::to_wstring(cache.Width) + L"x" + std::to_wstring(cache.Height);
 
-    COORD size{static_cast<SHORT>(visibleWidth), static_cast<SHORT>(visibleHeight)};
-    COORD coord{0, 0};
-    SMALL_RECT dest = info.srWindow;
-    dest.Right = static_cast<SHORT>(dest.Left + visibleWidth - 1);
-    dest.Bottom = static_cast<SHORT>(dest.Top + visibleHeight - 1);
-    return WriteConsoleOutputW(visible, frame.data(), size, coord, &dest) != FALSE;
+    if (static_cast<int>(footer.size()) > width)
+        footer.resize(static_cast<size_t>(width));
+
+    PutText(frame, width, height, 0, y, footer, footerAttr);
+}
+
+static bool RenderVisibleFromCache(const HiddenCache& cache, int virtualLeft, int virtualTop, int selectedIndex, int rowCount, int visibleWidth, int visibleHeight)
+{
+    if (visibleWidth <= 0 || visibleHeight <= 0)
+        return false;
+
+    std::vector<CHAR_INFO> frame(static_cast<size_t>(visibleWidth) * static_cast<size_t>(visibleHeight), MakeCell(L' ', gNormalAttr));
+
+    int headerRows = std::min(kHeaderRows, visibleHeight);
+    for (int y = 0; y < headerRows; ++y)
+    {
+        for (int x = 0; x < visibleWidth; ++x)
+        {
+            if (x >= 0 && x < cache.Width && y >= 0 && y < cache.Height)
+                frame[static_cast<size_t>(y) * static_cast<size_t>(visibleWidth) + static_cast<size_t>(x)] =
+                    cache.Cells[static_cast<size_t>(y) * static_cast<size_t>(cache.Width) + static_cast<size_t>(x)];
+        }
+    }
+
+    int footerRow = visibleHeight - 1;
+    int bodyHeight = std::max(0, footerRow - kBodyTop);
+    for (int y = 0; y < bodyHeight; ++y)
+    {
+        int sy = kBodyTop + virtualTop + y;
+        int dy = kBodyTop + y;
+        if (dy < 0 || dy >= visibleHeight || sy < 0 || sy >= cache.Height)
+            continue;
+
+        for (int x = 0; x < visibleWidth; ++x)
+        {
+            int sx = virtualLeft + x;
+            if (sx >= 0 && sx < cache.Width)
+                frame[static_cast<size_t>(dy) * static_cast<size_t>(visibleWidth) + static_cast<size_t>(x)] =
+                    cache.Cells[static_cast<size_t>(sy) * static_cast<size_t>(cache.Width) + static_cast<size_t>(sx)];
+        }
+    }
+
+    OverlayFooter(frame, visibleWidth, visibleHeight, virtualLeft, virtualTop, selectedIndex, rowCount, cache);
+
+    COORD bufferSize{static_cast<SHORT>(visibleWidth), static_cast<SHORT>(visibleHeight)};
+    COORD bufferCoord{0, 0};
+
+    // Windows Terminal / ConPTY does not always honor the classic-conhost assumption
+    // that the active screen-buffer viewport is at 0,0.  If we always write to
+    // {0,0,width-1,height-1}, the frame can be written above the visible viewport,
+    // which makes the top rows disappear and can make rows look joined.
+    // Use the actual current viewport origin, but keep the frame itself 0-based.
+    SMALL_RECT dest{0, 0, static_cast<SHORT>(visibleWidth - 1), static_cast<SHORT>(visibleHeight - 1)};
+    CONSOLE_SCREEN_BUFFER_INFO outInfo{};
+    if (GetInfo(gVisibleOut, outInfo))
+    {
+        dest.Left = outInfo.srWindow.Left;
+        dest.Top = outInfo.srWindow.Top;
+        dest.Right = static_cast<SHORT>(dest.Left + visibleWidth - 1);
+        dest.Bottom = static_cast<SHORT>(dest.Top + visibleHeight - 1);
+    }
+
+    return WriteConsoleOutputW(gVisibleOut, frame.data(), bufferSize, bufferCoord, &dest) != FALSE;
 }
 
 static int RunSelector(const std::vector<Row>& rows, int initialIndex, int* selectedIndexOut)
@@ -435,6 +511,7 @@ static int RunSelector(const std::vector<Row>& rows, int initialIndex, int* sele
     CONSOLE_SCREEN_BUFFER_INFO originalInfo{};
     if (!GetInfo(gOriginalOut, originalInfo))
         return -4;
+
     int originalVisibleWidth = std::max(kMinVisibleWidth, RectWidth(originalInfo.srWindow));
     int originalVisibleHeight = std::max(kMinVisibleHeight, RectHeight(originalInfo.srWindow));
 
@@ -445,40 +522,22 @@ static int RunSelector(const std::vector<Row>& rows, int initialIndex, int* sele
     int hiddenWidth = RequiredHiddenWidth(rows, originalVisibleWidth);
     int hiddenHeight = RequiredHiddenHeight(rows, originalVisibleHeight);
 
-    // The key anti-flicker change: size the active visible buffer once, generously,
-    // before activating it. Do not grow dwSize while the user drags the terminal size.
-    int visibleFixedWidthCandidate = std::max<int>(
-        std::max<int>(originalVisibleWidth, static_cast<int>(originalInfo.dwSize.X)),
-        std::max<int>(hiddenWidth, 512));
-    int visibleFixedHeightCandidate = std::max<int>(
-        std::max<int>(originalVisibleHeight, static_cast<int>(originalInfo.dwSize.Y)),
-        std::max<int>(hiddenHeight, 300));
-
-    int visibleFixedWidth = ClampInt(visibleFixedWidthCandidate, originalVisibleWidth, 32000);
-    int visibleFixedHeight = ClampInt(visibleFixedHeightCandidate, originalVisibleHeight, 2000);
-
     gVisibleOut = CreateBuffer();
     gHiddenOut = CreateBuffer();
     if (gVisibleOut == INVALID_HANDLE_VALUE || gHiddenOut == INVALID_HANDLE_VALUE)
         return -5;
 
-    SMALL_RECT initialWin{0, 0, static_cast<SHORT>(originalVisibleWidth - 1), static_cast<SHORT>(originalVisibleHeight - 1)};
-    COORD visibleSize{static_cast<SHORT>(visibleFixedWidth), static_cast<SHORT>(visibleFixedHeight)};
-    SetConsoleScreenBufferSize(gVisibleOut, visibleSize);
-    SetConsoleWindowInfo(gVisibleOut, TRUE, &initialWin);
-    SetConsoleScreenBufferSize(gVisibleOut, visibleSize);
-    gVisibleFixedSize = visibleSize;
-
-    COORD hiddenSize{static_cast<SHORT>(hiddenWidth), static_cast<SHORT>(hiddenHeight)};
-    SetConsoleScreenBufferSize(gHiddenOut, hiddenSize);
-    SMALL_RECT hiddenWin{0, 0, static_cast<SHORT>(std::min(hiddenWidth, originalVisibleWidth) - 1), static_cast<SHORT>(std::min(hiddenHeight, originalVisibleHeight) - 1)};
-    SetConsoleWindowInfo(gHiddenOut, TRUE, &hiddenWin);
-
-    RenderHidden(gHiddenOut, hiddenWidth, hiddenHeight, rows, selectedIndex);
-
     if (!SetConsoleActiveScreenBuffer(gVisibleOut))
         return -6;
     HideCursor(gVisibleOut);
+
+    int visibleWidth = 0;
+    int visibleHeight = 0;
+    NormalizeVisibleBufferToWindow(visibleWidth, visibleHeight);
+
+    hiddenWidth = std::max(hiddenWidth, RequiredHiddenWidth(rows, visibleWidth));
+    hiddenHeight = std::max(hiddenHeight, RequiredHiddenHeight(rows, visibleHeight));
+    HiddenCache cache = BuildHiddenCache(gHiddenOut, hiddenWidth, hiddenHeight, rows, selectedIndex);
 
     int lastVisibleWidth = -1;
     int lastVisibleHeight = -1;
@@ -490,15 +549,29 @@ static int RunSelector(const std::vector<Row>& rows, int initialIndex, int* sele
 
     while (true)
     {
-        CONSOLE_SCREEN_BUFFER_INFO visibleInfo{};
-        if (GetInfo(gVisibleOut, visibleInfo))
+        int currentWidth = 0;
+        int currentHeight = 0;
+        if (NormalizeVisibleBufferToWindow(currentWidth, currentHeight))
         {
-            int currentWidth = std::max(kMinVisibleWidth, RectWidth(visibleInfo.srWindow));
-            int currentHeight = std::max(kMinVisibleHeight, RectHeight(visibleInfo.srWindow));
+            visibleWidth = currentWidth;
+            visibleHeight = currentHeight;
 
-            int bodyHeight = std::max(1, currentHeight - kBodyTop - 1);
+            if (visibleWidth > hiddenWidth)
+            {
+                hiddenWidth = RequiredHiddenWidth(rows, visibleWidth);
+                hiddenDirty = true;
+            }
+
+            int desiredHiddenHeight = RequiredHiddenHeight(rows, visibleHeight);
+            if (desiredHiddenHeight > hiddenHeight)
+            {
+                hiddenHeight = desiredHiddenHeight;
+                hiddenDirty = true;
+            }
+
+            int bodyHeight = std::max(1, visibleHeight - kBodyTop - 1);
             int maxTop = std::max(0, static_cast<int>(rows.size()) - bodyHeight);
-            int maxLeft = std::max(0, hiddenWidth - currentWidth);
+            int maxLeft = std::max(0, hiddenWidth - visibleWidth);
 
             if (selectedIndex < virtualTop)
                 virtualTop = selectedIndex;
@@ -507,12 +580,12 @@ static int RunSelector(const std::vector<Row>& rows, int initialIndex, int* sele
             virtualTop = ClampInt(virtualTop, 0, maxTop);
             virtualLeft = ClampInt(virtualLeft, 0, maxLeft);
 
-            if (currentWidth != lastVisibleWidth || currentHeight != lastVisibleHeight ||
+            if (visibleWidth != lastVisibleWidth || visibleHeight != lastVisibleHeight ||
                 selectedIndex != lastSelectedIndex || virtualTop != lastVirtualTop || virtualLeft != lastVirtualLeft)
             {
                 visibleDirty = true;
-                lastVisibleWidth = currentWidth;
-                lastVisibleHeight = currentHeight;
+                lastVisibleWidth = visibleWidth;
+                lastVisibleHeight = visibleHeight;
                 lastSelectedIndex = selectedIndex;
                 lastVirtualTop = virtualTop;
                 lastVirtualLeft = virtualLeft;
@@ -521,14 +594,14 @@ static int RunSelector(const std::vector<Row>& rows, int initialIndex, int* sele
 
         if (hiddenDirty)
         {
-            RenderHidden(gHiddenOut, hiddenWidth, hiddenHeight, rows, selectedIndex);
+            cache = BuildHiddenCache(gHiddenOut, hiddenWidth, hiddenHeight, rows, selectedIndex);
             hiddenDirty = false;
             visibleDirty = true;
         }
 
         if (visibleDirty)
         {
-            CopyViewport(gHiddenOut, gVisibleOut, hiddenWidth, hiddenHeight, virtualLeft, virtualTop, selectedIndex, static_cast<int>(rows.size()));
+            RenderVisibleFromCache(cache, virtualLeft, virtualTop, selectedIndex, static_cast<int>(rows.size()), visibleWidth, visibleHeight);
             HideCursor(gVisibleOut);
             visibleDirty = false;
         }
@@ -555,11 +628,8 @@ static int RunSelector(const std::vector<Row>& rows, int initialIndex, int* sele
                 continue;
             }
 
-            CONSOLE_SCREEN_BUFFER_INFO vi{};
-            GetInfo(gVisibleOut, vi);
-            int currentHeight = std::max(kMinVisibleHeight, RectHeight(vi.srWindow));
-            int bodyHeight = std::max(1, currentHeight - kBodyTop - 1);
-            int maxLeft = std::max(0, hiddenWidth - std::max(kMinVisibleWidth, RectWidth(vi.srWindow)));
+            int bodyHeight = std::max(1, visibleHeight - kBodyTop - 1);
+            int maxLeft = std::max(0, hiddenWidth - visibleWidth);
 
             if (e.EventType == MOUSE_EVENT)
             {
@@ -583,7 +653,7 @@ static int RunSelector(const std::vector<Row>& rows, int initialIndex, int* sele
                 bool leftDown = (m.dwButtonState & FROM_LEFT_1ST_BUTTON_PRESSED) != 0;
                 if (leftDown && (m.dwEventFlags == 0 || m.dwEventFlags == DOUBLE_CLICK))
                 {
-                    int y = m.dwMousePosition.Y - vi.srWindow.Top;
+                    int y = m.dwMousePosition.Y;
                     int row = y - kBodyTop;
                     if (row >= 0 && row < bodyHeight)
                     {
@@ -715,4 +785,5 @@ int __stdcall SelectWindowFromRows(const NativeSelectorRow* nativeRows, int rowC
 
     return result;
 }
+
 
