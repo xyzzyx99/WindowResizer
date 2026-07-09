@@ -615,9 +615,7 @@ int __stdcall SelectWindowFromRows(const NativeSelectorRow* nativeRows, int rowC
     int result = -1;
     if (selectedIndexOut)
         *selectedIndexOut = 0;
-
-    __try
-    {
+    try`r`n    {
         if (!nativeRows || rowCount <= 0)
             result = -2;
         else
@@ -636,8 +634,7 @@ int __stdcall SelectWindowFromRows(const NativeSelectorRow* nativeRows, int rowC
             result = RunSelector(rows, initialIndex, selectedIndexOut);
         }
     }
-    __except (EXCEPTION_EXECUTE_HANDLER)
-    {
+    catch (...)`r`n    {
         result = -101;
     }
 
@@ -660,3 +657,4 @@ int __stdcall SelectWindowFromRows(const NativeSelectorRow* nativeRows, int rowC
 
     return result;
 }
+
