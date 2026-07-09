@@ -125,7 +125,7 @@ if (!Console.IsInputRedirected)
 
     private static T RunWithScanningDots<T>(System.Func<T> action)
     {
-        System.Console.Write("Scanning processes");
+        System.Console.Write("Scanning processes ");
 
         var done = new System.Threading.ManualResetEventSlim(false);
         var thread = new System.Threading.Thread(() =>
