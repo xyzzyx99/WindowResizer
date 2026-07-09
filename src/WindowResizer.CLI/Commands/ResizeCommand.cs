@@ -216,7 +216,7 @@ return false;
     {
         System.Console.Write("Scanning processes");
 
-        using var done = new System.Threading.ManualResetEventSlim(false);
+        var done = new System.Threading.ManualResetEventSlim(false);
         var thread = new System.Threading.Thread(() =>
         {
             while (!done.Wait(System.TimeSpan.FromSeconds(1)))
@@ -237,6 +237,7 @@ return false;
             done.Set();
             thread.Join();
             System.Console.WriteLine();
+            done.Dispose();
         }
     }            private static string FormatNativeSelectorRow(WindowCmd.TargetWindow target)
             {
