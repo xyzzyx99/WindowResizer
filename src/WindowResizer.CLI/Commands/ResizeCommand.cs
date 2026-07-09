@@ -18,7 +18,7 @@ namespace WindowResizer.CLI.Commands
     {
         private const int SelectorResizePollMilliseconds = 50;
 
-        public ResizeCommand() : base("resize", "Resize window by process/title, use -w/--window for direct placement, or -i/--interactive to choose a window.")
+        public ResizeCommand() : base("resize", "Default command. Resize window by process/title. The command name may be omitted; for example, use -i instead of resize -i.")
         {
             var configOption = new ConfigOption();
             AddOption(configOption);
