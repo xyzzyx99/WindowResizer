@@ -445,10 +445,36 @@ namespace
         return segments;
     }
 
-    static void WriteStyledLine(ConsoleState& state, int row0, int width, const std::vector<Segment>& segments, int virtualLeft)
+    static void AppendMoveTo(std::wstring& batch, int row0, int col0)
     {
-        WriteWide(state.out, MoveTo(row0, 0));
-        WriteWide(state.out, Esc(L"[2K"));
+        batch.push_back(0x1B);
+        batch += L"[";
+        batch += std::to_wstring(row0 + 1);
+        batch += L";";
+        batch += std::to_wstring(col0 + 1);
+        batch += L"H";
+    }
+
+    static void AppendClearLine(std::wstring& batch)
+    {
+        batch += L"\x1b[2K";
+    }
+
+    static void AppendStyle(std::wstring& batch, Style style)
+    {
+        batch += StyleCode(style);
+    }
+
+    static void AppendSpaces(std::wstring& batch, int count)
+    {
+        if (count > 0)
+            batch.append(static_cast<size_t>(count), L' ');
+    }
+
+    static void AppendStyledLine(std::wstring& batch, int row0, int width, const std::vector<Segment>& segments, int virtualLeft, bool selected)
+    {
+        AppendMoveTo(batch, row0, 0);
+        AppendClearLine(batch);
 
         int globalCell = 0;
         int usedCells = 0;
@@ -478,34 +504,129 @@ namespace
             {
                 if (!hasStyle || currentStyle != segment.style)
                 {
-                    WriteWide(state.out, StyleCode(segment.style));
+                    AppendStyle(batch, segment.style);
                     currentStyle = segment.style;
                     hasStyle = true;
                 }
 
-                WriteWide(state.out, part);
+                batch += part;
                 usedCells += CellWidth(part);
             }
 
             globalCell = segmentEnd;
         }
 
-        WriteWide(state.out, Esc(L"[0m"));
+        if (selected && usedCells < width)
+        {
+            if (!hasStyle || currentStyle != Style::Selected)
+                AppendStyle(batch, Style::Selected);
+            AppendSpaces(batch, width - usedCells);
+        }
+
+        batch += L"\x1b[0m";
     }
 
-    static void WritePlainLine(ConsoleState& state, int row0, int width, const std::wstring& text, Style style)
+    static void AppendPlainLine(std::wstring& batch, int row0, int width, const std::wstring& text, Style style, bool fillLine)
     {
-        WriteWide(state.out, MoveTo(row0, 0));
-        WriteWide(state.out, Esc(L"[2K"));
-        WriteWide(state.out, StyleCode(style));
-        WriteWide(state.out, SliceByCells(text, 0, width));
-        WriteWide(state.out, Esc(L"[0m"));
+        AppendMoveTo(batch, row0, 0);
+        AppendClearLine(batch);
+        AppendStyle(batch, style);
+
+        std::wstring part = SliceByCells(text, 0, width);
+        batch += part;
+
+        if (fillLine)
+        {
+            int used = CellWidth(part);
+            if (used < width)
+                AppendSpaces(batch, width - used);
+        }
+
+        batch += L"\x1b[0m";
     }
 
-    static void ClearLine(ConsoleState& state, int row0)
+    static void AppendClearOnlyLine(std::wstring& batch, int row0)
     {
-        WriteWide(state.out, MoveTo(row0, 0));
-        WriteWide(state.out, Esc(L"[2K"));
+        AppendMoveTo(batch, row0, 0);
+        AppendClearLine(batch);
+        batch += L"\x1b[0m";
+    }
+
+    static void FlushBatch(ConsoleState& state, const std::wstring& batch)
+    {
+        WriteWide(state.out, batch);
+    }
+
+    static std::wstring BuildStatusText(
+        const std::vector<Row>& rows,
+        int selectedIndex,
+        int virtualTop,
+        int virtualLeft,
+        int visibleWidth,
+        int visibleHeight,
+        int hiddenWidth,
+        int hiddenHeight)
+    {
+        return
+            L" NATIVE DLL selector VT partial | rows=" + std::to_wstring(rows.size()) +
+            L" | visible=" + std::to_wstring(visibleWidth) + L"x" + std::to_wstring(visibleHeight) +
+            L" | hidden dwSize=" + std::to_wstring(hiddenWidth) + L"x" + std::to_wstring(hiddenHeight) +
+            L" | left=" + std::to_wstring(virtualLeft) +
+            L" top=" + std::to_wstring(virtualTop) +
+            L" selected=" + std::to_wstring(selectedIndex);
+    }
+
+    static void AppendRowBySourceIndex(
+        std::wstring& batch,
+        const std::vector<Row>& rows,
+        int sourceRow,
+        int virtualTop,
+        int virtualLeft,
+        int visibleWidth,
+        int visibleHeight,
+        int selectedIndex)
+    {
+        int listHeight = std::max(0, visibleHeight - HeaderRows() - StatusRows());
+        if (sourceRow < virtualTop || sourceRow >= virtualTop + listHeight)
+            return;
+
+        int screenRow = HeaderRows() + sourceRow - virtualTop;
+        if (screenRow < HeaderRows() || screenRow >= visibleHeight - StatusRows())
+            return;
+
+        if (sourceRow >= 0 && sourceRow < static_cast<int>(rows.size()))
+        {
+            bool selected = sourceRow == selectedIndex;
+            AppendStyledLine(batch, screenRow, visibleWidth, BuildRowSegments(rows[static_cast<size_t>(sourceRow)], selected), virtualLeft, selected);
+        }
+        else
+        {
+            AppendClearOnlyLine(batch, screenRow);
+        }
+    }
+
+    static void AppendStatusLine(
+        std::wstring& batch,
+        const std::vector<Row>& rows,
+        int selectedIndex,
+        int virtualTop,
+        int virtualLeft,
+        int visibleWidth,
+        int visibleHeight,
+        int hiddenWidth,
+        int hiddenHeight)
+    {
+        if (visibleHeight <= 0)
+            return;
+
+        int statusY = visibleHeight - 1;
+        AppendPlainLine(
+            batch,
+            statusY,
+            visibleWidth,
+            BuildStatusText(rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight),
+            Style::Status,
+            true);
     }
 
     static void RenderVirtualBuffer(
@@ -522,13 +643,16 @@ namespace
         if (visibleWidth <= 0 || visibleHeight <= 0)
             return;
 
-        WritePlainLine(state, 0, visibleWidth, L"NATIVE DLL selector VT virtual buffer", Style::Header);
-        WritePlainLine(state, 1, visibleWidth, L"Up/Down move  PgUp/PgDn  Home/End  Left/Right pan  Enter select  Esc cancel", Style::Header);
+        std::wstring batch;
+        batch.reserve(static_cast<size_t>(visibleWidth) * static_cast<size_t>(std::max(visibleHeight, 1)) * 2);
+
+        AppendPlainLine(batch, 0, visibleWidth, L"NATIVE DLL selector VT virtual buffer", Style::Header, false);
+        AppendPlainLine(batch, 1, visibleWidth, L"Up/Down move  PgUp/PgDn  Home/End  Left/Right pan  Enter select  Esc cancel", Style::Header, false);
 
         std::wstring ruler;
         for (int i = 0; i < visibleWidth; ++i)
             ruler.push_back(static_cast<wchar_t>(L'0' + ((virtualLeft + i) % 10)));
-        WritePlainLine(state, 2, visibleWidth, ruler, Style::Header);
+        AppendPlainLine(batch, 2, visibleWidth, ruler, Style::Header, false);
 
         int listTop = HeaderRows();
         int listHeight = std::max(0, visibleHeight - HeaderRows() - StatusRows());
@@ -540,25 +664,44 @@ namespace
             if (sourceRow >= 0 && sourceRow < static_cast<int>(rows.size()))
             {
                 bool selected = sourceRow == selectedIndex;
-                WriteStyledLine(state, y, visibleWidth, BuildRowSegments(rows[static_cast<size_t>(sourceRow)], selected), virtualLeft);
+                AppendStyledLine(batch, y, visibleWidth, BuildRowSegments(rows[static_cast<size_t>(sourceRow)], selected), virtualLeft, selected);
             }
             else
             {
-                ClearLine(state, y);
+                AppendClearOnlyLine(batch, y);
             }
         }
 
-        int statusY = visibleHeight - 1;
-        std::wstring status =
-            L" NATIVE DLL selector VT | rows=" + std::to_wstring(rows.size()) +
-            L" | visible=" + std::to_wstring(visibleWidth) + L"x" + std::to_wstring(visibleHeight) +
-            L" | hidden dwSize=" + std::to_wstring(hiddenWidth) + L"x" + std::to_wstring(hiddenHeight) +
-            L" | left=" + std::to_wstring(virtualLeft) +
-            L" top=" + std::to_wstring(virtualTop) +
-            L" selected=" + std::to_wstring(selectedIndex);
+        AppendStatusLine(batch, rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
+        AppendMoveTo(batch, std::max(0, visibleHeight - 1), 0);
+        FlushBatch(state, batch);
+    }
 
-        WritePlainLine(state, statusY, visibleWidth, status, Style::Status);
-        WriteWide(state.out, MoveTo(std::max(0, visibleHeight - 1), 0));
+    static void RenderSelectionDelta(
+        ConsoleState& state,
+        const std::vector<Row>& rows,
+        int oldSelectedIndex,
+        int selectedIndex,
+        int virtualTop,
+        int virtualLeft,
+        int visibleWidth,
+        int visibleHeight,
+        int hiddenWidth,
+        int hiddenHeight)
+    {
+        if (visibleWidth <= 0 || visibleHeight <= 0)
+            return;
+
+        std::wstring batch;
+        batch.reserve(static_cast<size_t>(visibleWidth) * 6);
+
+        if (oldSelectedIndex != selectedIndex)
+            AppendRowBySourceIndex(batch, rows, oldSelectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, selectedIndex);
+
+        AppendRowBySourceIndex(batch, rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, selectedIndex);
+        AppendStatusLine(batch, rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
+        AppendMoveTo(batch, std::max(0, visibleHeight - 1), 0);
+        FlushBatch(state, batch);
     }
 
     static void ReadAllInput(ConsoleState& state, std::vector<INPUT_RECORD>& events)
@@ -626,7 +769,11 @@ namespace
         int virtualLeft = 0;
         int lastWidth = -1;
         int lastHeight = -1;
-        bool dirty = true;
+        int lastVirtualTop = -1;
+        int lastVirtualLeft = -1;
+        int lastSelectedIndex = -1;
+        bool fullDirty = true;
+        bool selectionDirty = false;
         bool running = true;
         bool accepted = false;
 
@@ -634,6 +781,7 @@ namespace
 
         while (running)
         {
+            int oldSelectedIndex = selectedIndex;
             int w = 0;
             int h = 0;
             if (GetVisibleSize(state.out, w, h))
@@ -646,7 +794,7 @@ namespace
                     lastHeight = visibleHeight;
                     hiddenWidth = std::max(hiddenWidth, visibleWidth);
                     hiddenHeight = std::max(hiddenHeight, visibleHeight);
-                    dirty = true;
+                    fullDirty = true;
                 }
             }
 
@@ -663,11 +811,24 @@ namespace
             virtualTop = ClampInt(virtualTop, 0, maxTop);
             virtualLeft = ClampInt(virtualLeft, 0, maxLeft);
 
-            if (dirty)
+            if (virtualTop != lastVirtualTop || virtualLeft != lastVirtualLeft)
+                fullDirty = true;
+
+            if (fullDirty)
             {
                 RenderVirtualBuffer(state, rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
-                dirty = false;
+                fullDirty = false;
+                selectionDirty = false;
             }
+            else if (selectionDirty || selectedIndex != lastSelectedIndex)
+            {
+                RenderSelectionDelta(state, rows, oldSelectedIndex, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
+                selectionDirty = false;
+            }
+
+            lastVirtualTop = virtualTop;
+            lastVirtualLeft = virtualLeft;
+            lastSelectedIndex = selectedIndex;
 
             DWORD waitResult = WaitForSingleObject(state.in, 40);
             if (waitResult != WAIT_OBJECT_0)
@@ -680,7 +841,7 @@ namespace
             {
                 if (eventRecord.EventType == WINDOW_BUFFER_SIZE_EVENT)
                 {
-                    dirty = true;
+                    fullDirty = true;
                     continue;
                 }
 
@@ -706,7 +867,7 @@ namespace
                     if (selectedIndex > 0)
                     {
                         --selectedIndex;
-                        dirty = true;
+                        selectionDirty = true;
                     }
                     break;
 
@@ -714,53 +875,59 @@ namespace
                     if (selectedIndex < static_cast<int>(rows.size()) - 1)
                     {
                         ++selectedIndex;
-                        dirty = true;
+                        selectionDirty = true;
                     }
                     break;
 
                 case VK_PRIOR:
                     selectedIndex = std::max(0, selectedIndex - std::max(1, listHeight));
-                    dirty = true;
+                    selectionDirty = true;
                     break;
 
                 case VK_NEXT:
                     selectedIndex = std::min(static_cast<int>(rows.size()) - 1, selectedIndex + std::max(1, listHeight));
-                    dirty = true;
+                    selectionDirty = true;
                     break;
 
                 case VK_HOME:
                     if (key.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED))
                         virtualLeft = 0;
                     else
+                    {
                         selectedIndex = 0;
-                    dirty = true;
+                        selectionDirty = true;
+                    }
+                    fullDirty = true;
                     break;
 
                 case VK_END:
                     if (key.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED))
                         virtualLeft = maxLeft;
                     else
+                    {
                         selectedIndex = static_cast<int>(rows.size()) - 1;
-                    dirty = true;
+                        selectionDirty = true;
+                    }
+                    fullDirty = true;
                     break;
 
                 case VK_LEFT:
                     virtualLeft = std::max(0, virtualLeft - 4);
-                    dirty = true;
+                    fullDirty = true;
                     break;
 
                 case VK_RIGHT:
                     virtualLeft = std::min(maxLeft, virtualLeft + 4);
-                    dirty = true;
+                    fullDirty = true;
                     break;
 
                 default:
                     if (key.uChar.UnicodeChar != 0)
                     {
-                        int oldIndex = selectedIndex;
+                        int beforeJump = selectedIndex;
                         JumpToProcessLetter(rows, selectedIndex, key.uChar.UnicodeChar);
-                        if (selectedIndex != oldIndex)
-                            dirty = true;
+                        if (selectedIndex != beforeJump)
+                            selectionDirty = true;
                     }
                     break;
                 }
