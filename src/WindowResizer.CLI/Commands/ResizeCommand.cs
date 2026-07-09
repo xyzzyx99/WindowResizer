@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.CommandLine;
@@ -91,6 +91,7 @@ namespace WindowResizer.CLI.Commands
                 return null;
             }
 
+            Output.Echo("Scanning processes ...");
             var targets = WindowCmd.GetSelectableTargets(process, title, Output.Error);
             if (!targets.Any())
             {
