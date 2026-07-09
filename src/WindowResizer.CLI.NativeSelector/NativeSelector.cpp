@@ -447,8 +447,15 @@ static int RunSelector(const std::vector<Row>& rows, int initialIndex, int* sele
 
     // The key anti-flicker change: size the active visible buffer once, generously,
     // before activating it. Do not grow dwSize while the user drags the terminal size.
-    int visibleFixedWidth = ClampInt(std::max({originalVisibleWidth, originalInfo.dwSize.X, hiddenWidth, 512}), originalVisibleWidth, 32000);
-    int visibleFixedHeight = ClampInt(std::max({originalVisibleHeight, originalInfo.dwSize.Y, hiddenHeight, 300}), originalVisibleHeight, 2000);
+    int visibleFixedWidthCandidate = std::max<int>(
+        std::max<int>(originalVisibleWidth, static_cast<int>(originalInfo.dwSize.X)),
+        std::max<int>(hiddenWidth, 512));
+    int visibleFixedHeightCandidate = std::max<int>(
+        std::max<int>(originalVisibleHeight, static_cast<int>(originalInfo.dwSize.Y)),
+        std::max<int>(hiddenHeight, 300));
+
+    int visibleFixedWidth = ClampInt(visibleFixedWidthCandidate, originalVisibleWidth, 32000);
+    int visibleFixedHeight = ClampInt(visibleFixedHeightCandidate, originalVisibleHeight, 2000);
 
     gVisibleOut = CreateBuffer();
     gHiddenOut = CreateBuffer();
@@ -708,3 +715,4 @@ int __stdcall SelectWindowFromRows(const NativeSelectorRow* nativeRows, int rowC
 
     return result;
 }
+
