@@ -741,7 +741,12 @@ namespace
         int total = static_cast<int>(rows.size());
         int oneBased = total <= 0 ? 0 : ClampInt(selectedIndex + 1, 1, total);
 
-        return L" Select " + std::to_wstring(oneBased) + L" of " + std::to_wstring(total) +
+        std::wstring totalText = std::to_wstring(total);
+        std::wstring selectedText = std::to_wstring(oneBased);
+        if (selectedText.size() < totalText.size())
+            selectedText.insert(0, totalText.size() - selectedText.size(), L' ');
+
+        return L" Select " + selectedText + L" of " + totalText +
             L". Click moves selection  Double click selects  Wheel moves row";
     }
 
