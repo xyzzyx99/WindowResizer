@@ -969,6 +969,11 @@ namespace
         return true;
     }
 
+    static bool HasCtrlOrShiftModifier(const MOUSE_EVENT_RECORD &mouse)
+    {
+        return (mouse.dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED | SHIFT_PRESSED)) != 0;
+    }
+
     static int SelectWithVirtualTerminal(const NativeSelectorRow *nativeRows, int rowCount, int initialIndex, int *selectedIndexOut)
     {
         if (nativeRows == nullptr || rowCount <= 0 || selectedIndexOut == nullptr)
@@ -1078,6 +1083,8 @@ namespace
                 if (eventRecord.EventType == MOUSE_EVENT)
                 {
                     const MOUSE_EVENT_RECORD &mouse = eventRecord.Event.MouseEvent;
+                    if (HasCtrlOrShiftModifier(mouse))
+                        continue;
 
                     if (mouse.dwEventFlags == MOUSE_WHEELED)
                     {
