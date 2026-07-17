@@ -102,10 +102,15 @@ namespace
         // input is taken from WH_MOUSE_LL so Ctrl+wheel can remain a terminal UI
         // action. Console mouse capture is suspended only while Ctrl is held.
         bool windowsTerminal = false;
-        bool lowLevelHooksActive = false;
+        volatile LONG lowLevelHooksActive = 0;
         bool mouseCaptureEnabled = false;
         HHOOK mouseHook = nullptr;
         HHOOK keyboardHook = nullptr;
+        HANDLE hookThread = nullptr;
+        DWORD hookThreadId = 0;
+        HANDLE hookReadyEvent = nullptr;
+        HANDLE hookStopEvent = nullptr;
+        volatile LONG hookInstallSucceeded = 0;
         HWND terminalWindow = nullptr;
         volatile LONG pendingWheelDelta = 0;
         int wheelRemainder = 0;
@@ -338,9 +343,17 @@ namespace
         return true;
     }
 
+    static bool AreWindowsTerminalHooksActive(const ConsoleState &state)
+    {
+        return InterlockedCompareExchange(
+                   const_cast<volatile LONG *>(&state.lowLevelHooksActive),
+                   0,
+                   0) != 0;
+    }
+
     static void RefreshWindowsTerminalMouseCapture(ConsoleState &state)
     {
-        if (!state.lowLevelHooksActive)
+        if (!AreWindowsTerminalHooksActive(state))
             return;
 
         const bool shouldEnable = !IsCtrlSuspendingMouseCapture(state);
@@ -351,7 +364,7 @@ namespace
     static LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wParam, LPARAM lParam)
     {
         ConsoleState *state = gHookState;
-        if (code == HC_ACTION && state != nullptr && state->lowLevelHooksActive &&
+        if (code == HC_ACTION && state != nullptr && AreWindowsTerminalHooksActive(*state) &&
             wParam == WM_MOUSEWHEEL)
         {
             const auto *mouse = reinterpret_cast<const MSLLHOOKSTRUCT *>(lParam);
@@ -391,7 +404,7 @@ namespace
     static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam)
     {
         ConsoleState *state = gHookState;
-        if (code == HC_ACTION && state != nullptr && state->lowLevelHooksActive)
+        if (code == HC_ACTION && state != nullptr && AreWindowsTerminalHooksActive(*state))
         {
             const auto *key = reinterpret_cast<const KBDLLHOOKSTRUCT *>(lParam);
             if (key != nullptr && IsCtrlVirtualKey(key->vkCode))
@@ -421,6 +434,102 @@ namespace
         return CallNextHookEx(nullptr, code, wParam, lParam);
     }
 
+    static void PumpCurrentThreadMessages()
+    {
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+
+    static DWORD WINAPI WindowsTerminalHookThreadProc(void *parameter)
+    {
+        auto *state = static_cast<ConsoleState *>(parameter);
+        if (state == nullptr)
+            return 1;
+
+        // Create this thread's message queue before the creator may need to wake
+        // it during shutdown.
+        MSG message{};
+        PeekMessageW(&message, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+
+        HMODULE module = nullptr;
+        bool installed = GetModuleHandleExW(
+                             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                             reinterpret_cast<LPCWSTR>(&LowLevelMouseProc),
+                             &module) != FALSE;
+
+        if (installed)
+        {
+            gHookState = state;
+            state->mouseHook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc, module, 0);
+            installed = state->mouseHook != nullptr;
+        }
+
+        if (installed)
+        {
+            state->keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, module, 0);
+            installed = state->keyboardHook != nullptr;
+        }
+
+        if (installed)
+        {
+            InterlockedExchange(&state->lowLevelHooksActive, 1);
+
+            if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
+                state->ctrlFallbackSuspended = true;
+
+            RefreshWindowsTerminalMouseCapture(*state);
+            InterlockedExchange(&state->hookInstallSucceeded, 1);
+        }
+
+        if (state->hookReadyEvent != nullptr)
+            SetEvent(state->hookReadyEvent);
+
+        if (installed)
+        {
+            while (true)
+            {
+                const DWORD waitResult = MsgWaitForMultipleObjects(
+                    1,
+                    &state->hookStopEvent,
+                    FALSE,
+                    INFINITE,
+                    QS_ALLINPUT);
+
+                if (waitResult == WAIT_OBJECT_0)
+                    break;
+
+                if (waitResult == WAIT_OBJECT_0 + 1)
+                    PumpCurrentThreadMessages();
+                else
+                    break;
+            }
+        }
+
+        InterlockedExchange(&state->lowLevelHooksActive, 0);
+
+        if (state->keyboardHook != nullptr)
+        {
+            UnhookWindowsHookEx(state->keyboardHook);
+            state->keyboardHook = nullptr;
+        }
+
+        if (state->mouseHook != nullptr)
+        {
+            UnhookWindowsHookEx(state->mouseHook);
+            state->mouseHook = nullptr;
+        }
+
+        if (gHookState == state)
+            gHookState = nullptr;
+
+        return installed ? 0 : 1;
+    }
+
     static bool InstallWindowsTerminalHooks(ConsoleState &state)
     {
         if (!state.windowsTerminal)
@@ -430,72 +539,82 @@ namespace
         if (state.terminalWindow == nullptr)
             return false;
 
-        HMODULE module = nullptr;
-        if (!GetModuleHandleExW(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                reinterpret_cast<LPCWSTR>(&LowLevelMouseProc),
-                &module))
+        state.hookReadyEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        state.hookStopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (state.hookReadyEvent == nullptr || state.hookStopEvent == nullptr)
         {
+            if (state.hookReadyEvent != nullptr)
+                CloseHandle(state.hookReadyEvent);
+            if (state.hookStopEvent != nullptr)
+                CloseHandle(state.hookStopEvent);
+            state.hookReadyEvent = nullptr;
+            state.hookStopEvent = nullptr;
             return false;
         }
 
-        gHookState = &state;
-        state.mouseHook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc, module, 0);
-        if (state.mouseHook == nullptr)
+        state.hookThread = CreateThread(
+            nullptr,
+            0,
+            WindowsTerminalHookThreadProc,
+            &state,
+            0,
+            &state.hookThreadId);
+        if (state.hookThread == nullptr)
         {
-            gHookState = nullptr;
+            CloseHandle(state.hookReadyEvent);
+            CloseHandle(state.hookStopEvent);
+            state.hookReadyEvent = nullptr;
+            state.hookStopEvent = nullptr;
             return false;
         }
 
-        state.keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, module, 0);
-        if (state.keyboardHook == nullptr)
+        const DWORD readyResult = WaitForSingleObject(state.hookReadyEvent, 5000);
+        const bool installed = readyResult == WAIT_OBJECT_0 &&
+                               InterlockedCompareExchange(&state.hookInstallSucceeded, 0, 0) != 0;
+
+        CloseHandle(state.hookReadyEvent);
+        state.hookReadyEvent = nullptr;
+
+        if (!installed)
         {
-            UnhookWindowsHookEx(state.mouseHook);
-            state.mouseHook = nullptr;
-            gHookState = nullptr;
+            SetEvent(state.hookStopEvent);
+            PostThreadMessageW(state.hookThreadId, WM_NULL, 0, 0);
+            WaitForSingleObject(state.hookThread, INFINITE);
+            CloseHandle(state.hookThread);
+            CloseHandle(state.hookStopEvent);
+            state.hookThread = nullptr;
+            state.hookStopEvent = nullptr;
+            state.hookThreadId = 0;
             return false;
         }
 
-        state.lowLevelHooksActive = true;
-
-        // If Ctrl was already held before hook installation, suspend mouse capture
-        // immediately instead of waiting for another keyboard transition.
-        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
-            state.ctrlFallbackSuspended = true;
-
-        RefreshWindowsTerminalMouseCapture(state);
         return true;
     }
 
     static void RemoveWindowsTerminalHooks(ConsoleState &state)
     {
-        state.lowLevelHooksActive = false;
-
-        if (state.keyboardHook != nullptr)
+        if (state.hookThread != nullptr)
         {
-            UnhookWindowsHookEx(state.keyboardHook);
-            state.keyboardHook = nullptr;
+            if (state.hookStopEvent != nullptr)
+                SetEvent(state.hookStopEvent);
+
+            if (state.hookThreadId != 0)
+                PostThreadMessageW(state.hookThreadId, WM_NULL, 0, 0);
+
+            WaitForSingleObject(state.hookThread, INFINITE);
+            CloseHandle(state.hookThread);
+            state.hookThread = nullptr;
         }
 
-        if (state.mouseHook != nullptr)
+        if (state.hookStopEvent != nullptr)
         {
-            UnhookWindowsHookEx(state.mouseHook);
-            state.mouseHook = nullptr;
+            CloseHandle(state.hookStopEvent);
+            state.hookStopEvent = nullptr;
         }
 
-        if (gHookState == &state)
-            gHookState = nullptr;
-    }
-
-    static void PumpHookMessages()
-    {
-        MSG message{};
-        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
-        {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
+        state.hookThreadId = 0;
+        InterlockedExchange(&state.hookInstallSucceeded, 0);
+        InterlockedExchange(&state.lowLevelHooksActive, 0);
     }
 
     static std::wstring Esc(const wchar_t *suffix)
@@ -1255,8 +1374,6 @@ namespace
 
         while (running)
         {
-            if (state.lowLevelHooksActive)
-                PumpHookMessages();
             int w = 0;
             int h = 0;
             if (GetVisibleSize(state.out, w, h))
@@ -1273,7 +1390,7 @@ namespace
                 }
             }
 
-            if (state.lowLevelHooksActive)
+            if (AreWindowsTerminalHooksActive(state))
             {
                 const LONG wheelDelta = InterlockedExchange(&state.pendingWheelDelta, 0);
                 if (wheelDelta != 0)
@@ -1331,33 +1448,9 @@ namespace
             lastVirtualLeft = virtualLeft;
             lastSelectedIndex = selectedIndex;
 
-            DWORD waitResult = WAIT_TIMEOUT;
-            if (state.lowLevelHooksActive)
-            {
-                HANDLE handles[] = {state.in};
-                waitResult = MsgWaitForMultipleObjects(
-                    1,
-                    handles,
-                    FALSE,
-                    40,
-                    QS_ALLINPUT);
-
-                if (waitResult == WAIT_OBJECT_0 + 1)
-                {
-                    PumpHookMessages();
-                    continue;
-                }
-            }
-            else
-            {
-                waitResult = WaitForSingleObject(state.in, 40);
-            }
-
+            const DWORD waitResult = WaitForSingleObject(state.in, 40);
             if (waitResult != WAIT_OBJECT_0)
                 continue;
-
-            if (state.lowLevelHooksActive)
-                PumpHookMessages();
 
             std::vector<INPUT_RECORD> events;
             ReadAllInput(state, events);
@@ -1382,7 +1475,7 @@ namespace
                         // In Windows Terminal, ordinary wheel is consumed by
                         // WH_MOUSE_LL and Ctrl+wheel is passed through while mouse
                         // capture is suspended. Ignore any stale/duplicate record.
-                        if (state.lowLevelHooksActive)
+                        if (AreWindowsTerminalHooksActive(state))
                             continue;
 
                         short wheelDelta = static_cast<short>((mouse.dwButtonState >> 16) & 0xFFFF);
