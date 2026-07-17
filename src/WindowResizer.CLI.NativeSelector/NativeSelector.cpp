@@ -116,15 +116,17 @@ namespace
         volatile LONG pendingWheelDelta = 0;
         volatile LONG ordinaryWheelConsumed = 0;
         volatile LONG ctrlWheelPassed = 0;
+        volatile LONG ctrlDownTransitions = 0;
+        volatile LONG ctrlUpTransitions = 0;
         volatile LONG debugGeneration = 0;
         volatile LONG vtMouseRequested = 0;
         volatile LONG vtMouseEffective = 0;
         volatile LONG lastDebugEvent = 0;
         int wheelRemainder = 0;
-        bool leftCtrlDown = false;
-        bool rightCtrlDown = false;
-        bool genericCtrlDown = false;
-        bool ctrlFallbackSuspended = false;
+        volatile LONG leftCtrlDown = 0;
+        volatile LONG rightCtrlDown = 0;
+        volatile LONG genericCtrlDown = 0;
+        volatile LONG ctrlFallbackSuspended = 0;
         bool mKeyDown = false;
     };
 
@@ -326,8 +328,14 @@ namespace
 
     static bool IsCtrlSuspendingMouseCapture(const ConsoleState &state)
     {
-        return state.leftCtrlDown || state.rightCtrlDown ||
-               state.genericCtrlDown || state.ctrlFallbackSuspended;
+        return InterlockedCompareExchange(
+                   const_cast<volatile LONG *>(&state.leftCtrlDown), 0, 0) != 0 ||
+               InterlockedCompareExchange(
+                   const_cast<volatile LONG *>(&state.rightCtrlDown), 0, 0) != 0 ||
+               InterlockedCompareExchange(
+                   const_cast<volatile LONG *>(&state.genericCtrlDown), 0, 0) != 0 ||
+               InterlockedCompareExchange(
+                   const_cast<volatile LONG *>(&state.ctrlFallbackSuspended), 0, 0) != 0;
     }
 
     enum DebugEvent
@@ -501,6 +509,7 @@ namespace
         ApplySelectorInputMode(state, false, false);
         state.mouseCaptureEnabled = false;
         InterlockedExchange(&state.vtMouseEffective, 0);
+        InterlockedExchangeAdd(&state.ctrlDownTransitions, 1);
         RecordDebugEvent(state, DebugEventCtrlDown);
     }
 
@@ -567,12 +576,18 @@ namespace
                     const bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
                     if (ctrlDown)
                     {
-                        // The keyboard hook normally disables capture before the
-                        // wheel event. This fallback covers Ctrl already being held.
+                        // The keyboard hook normally performs the Ctrl-down
+                        // transition once. This fallback is needed only when Ctrl
+                        // was already held before the hook observed its key-down.
+                        // Do not resend the VT disable sequence for every wheel
+                        // notch; that made the debug state repeatedly report
+                        // CTRL-DOWN while Ctrl remained held.
                         if (!IsCtrlSuspendingMouseCapture(*state))
-                            state->ctrlFallbackSuspended = true;
+                        {
+                            InterlockedExchange(&state->ctrlFallbackSuspended, 1);
+                            SuspendWindowsTerminalMouseModesForCtrl(*state);
+                        }
 
-                        SuspendWindowsTerminalMouseModesForCtrl(*state);
                         InterlockedExchangeAdd(&state->ctrlWheelPassed, 1);
                         RecordDebugEvent(*state, DebugEventCtrlWheelPassed);
 
@@ -618,26 +633,46 @@ namespace
                     if (keyDown && !IsTerminalForeground(*state))
                         return CallNextHookEx(nullptr, code, wParam, lParam);
 
+                    const bool wasCtrlDown = IsCtrlSuspendingMouseCapture(*state);
                     const bool down = keyDown;
-                    if (key->vkCode == VK_LCONTROL)
-                        state->leftCtrlDown = down;
-                    else if (key->vkCode == VK_RCONTROL)
-                        state->rightCtrlDown = down;
+
+                    // A low-level hook may identify Ctrl as VK_CONTROL or as a
+                    // side-specific virtual key. Normalize the generic form by
+                    // using LLKHF_EXTENDED (right Ctrl is extended), so duplicate
+                    // generic/side-specific notifications update one state bit
+                    // instead of producing separate transitions.
+                    const bool rightCtrl =
+                        key->vkCode == VK_RCONTROL ||
+                        (key->vkCode == VK_CONTROL &&
+                         (key->flags & LLKHF_EXTENDED) != 0);
+                    if (rightCtrl)
+                        InterlockedExchange(&state->rightCtrlDown, down ? 1 : 0);
                     else
-                        state->genericCtrlDown = down;
+                        InterlockedExchange(&state->leftCtrlDown, down ? 1 : 0);
+                    InterlockedExchange(&state->genericCtrlDown, 0);
 
                     if (keyDown)
                     {
-                        // Effective VT mouse reporting/input is disabled before
-                        // Ctrl+wheel reaches Windows Terminal.
-                        SuspendWindowsTerminalMouseModesForCtrl(*state);
+                        // Only perform the transition on the first up-to-down
+                        // edge. Repeated/duplicate Ctrl key-down notifications must
+                        // not resend mode changes while Ctrl is already held.
+                        InterlockedExchange(&state->ctrlFallbackSuspended, 0);
+                        if (!wasCtrlDown && IsCtrlSuspendingMouseCapture(*state))
+                            SuspendWindowsTerminalMouseModesForCtrl(*state);
                     }
                     else
                     {
-                        state->ctrlFallbackSuspended = false;
-                        // Restore the state requested with M, exactly as the demo.
-                        RefreshVtMouseState(*state);
-                        RecordDebugEvent(*state, DebugEventCtrlUp);
+                        // Restore only after every tracked Ctrl key is released.
+                        // This also avoids restoring when one Ctrl key is released
+                        // while the other remains held.
+                        InterlockedExchange(&state->ctrlFallbackSuspended, 0);
+                        if (wasCtrlDown && !IsCtrlSuspendingMouseCapture(*state))
+                        {
+                            // Restore the state requested with M, exactly as the demo.
+                            RefreshVtMouseState(*state);
+                            InterlockedExchangeAdd(&state->ctrlUpTransitions, 1);
+                            RecordDebugEvent(*state, DebugEventCtrlUp);
+                        }
                     }
                 }
 
@@ -716,7 +751,7 @@ namespace
             InterlockedExchange(&state->lowLevelHooksActive, 1);
 
             if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
-                state->ctrlFallbackSuspended = true;
+                InterlockedExchange(&state->ctrlFallbackSuspended, 1);
 
             // Start exactly like the demo: M-requested OFF, effective OFF,
             // ENABLE_VIRTUAL_TERMINAL_INPUT OFF, and ENABLE_MOUSE_INPUT OFF.
@@ -1442,6 +1477,8 @@ namespace
         const LONG lastEvent = InterlockedCompareExchange(&state.lastDebugEvent, 0, 0);
         const LONG ordinary = InterlockedCompareExchange(&state.ordinaryWheelConsumed, 0, 0);
         const LONG ctrlPassed = InterlockedCompareExchange(&state.ctrlWheelPassed, 0, 0);
+        const LONG ctrlDowns = InterlockedCompareExchange(&state.ctrlDownTransitions, 0, 0);
+        const LONG ctrlUps = InterlockedCompareExchange(&state.ctrlUpTransitions, 0, 0);
 
         std::wstring text = L" DEBUG M:req=";
         text += requested ? L"ON" : L"OFF";
@@ -1462,6 +1499,8 @@ namespace
         text += DebugEventName(lastEvent);
         text += L" wheel=" + std::to_wstring(ordinary);
         text += L" ctrlpass=" + std::to_wstring(ctrlPassed);
+        text += L" cd=" + std::to_wstring(ctrlDowns);
+        text += L" cu=" + std::to_wstring(ctrlUps);
         return text;
     }
 
