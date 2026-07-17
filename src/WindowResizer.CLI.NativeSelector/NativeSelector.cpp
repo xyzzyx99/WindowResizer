@@ -368,6 +368,42 @@ namespace
             ApplySelectorInputMode(state, false);
     }
 
+    static void SuspendWindowsTerminalMouseModesForCtrl(ConsoleState &state)
+    {
+        if (!state.windowsTerminal)
+            return;
+
+        // Reproduce the successful demo's Ctrl transition at the moment Ctrl is
+        // pressed. Disabling the modes only at selector startup is not equivalent:
+        // Windows Terminal may still have an effective VT mouse mode while the
+        // selector is running. Keep VT output processing enabled; only mouse
+        // reporting/input is disabled.
+        CancelClickCaptureTimer(state);
+        WriteWide(
+            state.out,
+            L"\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l");
+
+        DWORD mode = 0;
+        if (GetConsoleMode(state.in, &mode))
+        {
+            mode |= ENABLE_WINDOW_INPUT;
+            mode |= ENABLE_EXTENDED_FLAGS;
+            mode &= ~ENABLE_QUICK_EDIT_MODE;
+            mode &= ~ENABLE_MOUSE_INPUT;
+            mode &= ~ENABLE_VIRTUAL_TERMINAL_INPUT;
+
+            if (SetConsoleMode(state.in, mode))
+            {
+                state.mouseCaptureEnabled = false;
+                return;
+            }
+        }
+
+        // Preserve the established input-mode fallback if querying the live mode
+        // fails for an unusual console host.
+        ApplySelectorInputMode(state, false);
+    }
+
     static void BeginWindowsTerminalClickCapture(ConsoleState &state)
     {
         CancelClickCaptureTimer(state);
@@ -426,7 +462,7 @@ namespace
                         if (!IsCtrlSuspendingMouseCapture(*state))
                             state->ctrlFallbackSuspended = true;
 
-                        DisableWindowsTerminalMouseCapture(*state);
+                        SuspendWindowsTerminalMouseModesForCtrl(*state);
 
                         // Never consume Ctrl+wheel. Windows Terminal receives it
                         // while all application mouse modes are off and zooms text.
@@ -469,9 +505,10 @@ namespace
 
                     if (keyDown)
                     {
-                        // Match the working demo: Ctrl immediately returns Windows
-                        // Terminal to the mouse-off state before any wheel event.
-                        DisableWindowsTerminalMouseCapture(*state);
+                        // Match the working demo exactly: Ctrl immediately sends
+                        // the VT mouse-off sequences and clears both VT input and
+                        // Win32 mouse capture before any wheel event can arrive.
+                        SuspendWindowsTerminalMouseModesForCtrl(*state);
                     }
                     else
                     {
