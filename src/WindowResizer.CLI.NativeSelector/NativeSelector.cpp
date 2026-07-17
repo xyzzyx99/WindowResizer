@@ -16,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+#pragma comment(lib, "user32.lib")
+
 #ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
 #define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
 #endif
@@ -34,6 +36,10 @@
 
 #ifndef ENABLE_MOUSE_INPUT
 #define ENABLE_MOUSE_INPUT 0x0010
+#endif
+
+#ifndef ENABLE_VIRTUAL_TERMINAL_INPUT
+#define ENABLE_VIRTUAL_TERMINAL_INPUT 0x0200
 #endif
 
 #ifndef MOUSE_WHEELED
@@ -91,7 +97,25 @@ namespace
         bool haveOriginalCursor = false;
         bool vtEnabled = false;
         bool altScreen = false;
+
+        // Windows Terminal keeps the existing VT renderer, but ordinary wheel
+        // input is taken from WH_MOUSE_LL so Ctrl+wheel can remain a terminal UI
+        // action. Console mouse capture is suspended only while Ctrl is held.
+        bool windowsTerminal = false;
+        bool lowLevelHooksActive = false;
+        bool mouseCaptureEnabled = false;
+        HHOOK mouseHook = nullptr;
+        HHOOK keyboardHook = nullptr;
+        HWND terminalWindow = nullptr;
+        volatile LONG pendingWheelDelta = 0;
+        int wheelRemainder = 0;
+        bool leftCtrlDown = false;
+        bool rightCtrlDown = false;
+        bool genericCtrlDown = false;
+        bool ctrlFallbackSuspended = false;
     };
+
+    static ConsoleState *gHookState = nullptr;
 
     static int ClampInt(int value, int lo, int hi)
     {
@@ -258,6 +282,222 @@ namespace
             WriteConsoleW(out, text.c_str(), static_cast<DWORD>(text.size()), &written, nullptr);
     }
 
+
+    static bool IsWindowsTerminalSession()
+    {
+        wchar_t value[2]{};
+        return GetEnvironmentVariableW(L"WT_SESSION", value, 2) != 0;
+    }
+
+    static bool IsTerminalForeground(const ConsoleState &state)
+    {
+        return state.terminalWindow != nullptr &&
+               GetForegroundWindow() == state.terminalWindow;
+    }
+
+    static bool MousePointInsideTerminal(const ConsoleState &state, POINT point)
+    {
+        if (!IsTerminalForeground(state))
+            return false;
+
+        HWND hit = WindowFromPoint(point);
+        return hit != nullptr && GetAncestor(hit, GA_ROOT) == state.terminalWindow;
+    }
+
+    static bool IsCtrlVirtualKey(DWORD virtualKey)
+    {
+        return virtualKey == VK_CONTROL ||
+               virtualKey == VK_LCONTROL ||
+               virtualKey == VK_RCONTROL;
+    }
+
+    static bool IsCtrlSuspendingMouseCapture(const ConsoleState &state)
+    {
+        return state.leftCtrlDown || state.rightCtrlDown ||
+               state.genericCtrlDown || state.ctrlFallbackSuspended;
+    }
+
+    static bool ApplySelectorInputMode(ConsoleState &state, bool enableMouseCapture)
+    {
+        DWORD mode = state.originalInMode;
+        mode |= ENABLE_WINDOW_INPUT;
+        mode |= ENABLE_EXTENDED_FLAGS;
+        mode &= ~ENABLE_QUICK_EDIT_MODE;
+        if (state.windowsTerminal)
+            mode &= ~ENABLE_VIRTUAL_TERMINAL_INPUT;
+
+        if (enableMouseCapture)
+            mode |= ENABLE_MOUSE_INPUT;
+        else
+            mode &= ~ENABLE_MOUSE_INPUT;
+
+        if (!SetConsoleMode(state.in, mode))
+            return false;
+
+        state.mouseCaptureEnabled = enableMouseCapture;
+        return true;
+    }
+
+    static void RefreshWindowsTerminalMouseCapture(ConsoleState &state)
+    {
+        if (!state.lowLevelHooksActive)
+            return;
+
+        const bool shouldEnable = !IsCtrlSuspendingMouseCapture(state);
+        if (shouldEnable != state.mouseCaptureEnabled)
+            ApplySelectorInputMode(state, shouldEnable);
+    }
+
+    static LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wParam, LPARAM lParam)
+    {
+        ConsoleState *state = gHookState;
+        if (code == HC_ACTION && state != nullptr && state->lowLevelHooksActive &&
+            wParam == WM_MOUSEWHEEL)
+        {
+            const auto *mouse = reinterpret_cast<const MSLLHOOKSTRUCT *>(lParam);
+            if (mouse != nullptr && MousePointInsideTerminal(*state, mouse->pt))
+            {
+                const bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                if (ctrlDown)
+                {
+                    // The keyboard hook normally disables console mouse capture
+                    // before the wheel event. This also covers Ctrl being held
+                    // before the selector or Windows Terminal gains focus.
+                    if (!IsCtrlSuspendingMouseCapture(*state))
+                    {
+                        state->ctrlFallbackSuspended = true;
+                        RefreshWindowsTerminalMouseCapture(*state);
+                    }
+
+                    // Never consume Ctrl+wheel. Windows Terminal receives it and
+                    // performs its configured text-zoom action.
+                    return CallNextHookEx(nullptr, code, wParam, lParam);
+                }
+
+                const SHORT delta = static_cast<SHORT>((mouse->mouseData >> 16) & 0xFFFF);
+                if (delta != 0)
+                    InterlockedExchangeAdd(&state->pendingWheelDelta, static_cast<LONG>(delta));
+
+                // Ordinary wheel belongs to the selector. Consuming it here keeps
+                // Windows Terminal from also scrolling its own scrollback or
+                // creating a duplicate console MOUSE_EVENT.
+                return 1;
+            }
+        }
+
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+
+    static LRESULT CALLBACK LowLevelKeyboardProc(int code, WPARAM wParam, LPARAM lParam)
+    {
+        ConsoleState *state = gHookState;
+        if (code == HC_ACTION && state != nullptr && state->lowLevelHooksActive)
+        {
+            const auto *key = reinterpret_cast<const KBDLLHOOKSTRUCT *>(lParam);
+            if (key != nullptr && IsCtrlVirtualKey(key->vkCode))
+            {
+                const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
+                const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+                if (keyDown || keyUp)
+                {
+                    const bool down = keyDown;
+                    if (key->vkCode == VK_LCONTROL)
+                        state->leftCtrlDown = down;
+                    else if (key->vkCode == VK_RCONTROL)
+                        state->rightCtrlDown = down;
+                    else
+                        state->genericCtrlDown = down;
+
+                    if (keyUp)
+                        state->ctrlFallbackSuspended = false;
+
+                    // Do not consume Ctrl. Only suspend/restore console mouse
+                    // capture before Windows Terminal processes the next wheel.
+                    RefreshWindowsTerminalMouseCapture(*state);
+                }
+            }
+        }
+
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+
+    static bool InstallWindowsTerminalHooks(ConsoleState &state)
+    {
+        if (!state.windowsTerminal)
+            return false;
+
+        state.terminalWindow = GetAncestor(GetForegroundWindow(), GA_ROOT);
+        if (state.terminalWindow == nullptr)
+            return false;
+
+        HMODULE module = nullptr;
+        if (!GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(&LowLevelMouseProc),
+                &module))
+        {
+            return false;
+        }
+
+        gHookState = &state;
+        state.mouseHook = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc, module, 0);
+        if (state.mouseHook == nullptr)
+        {
+            gHookState = nullptr;
+            return false;
+        }
+
+        state.keyboardHook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, module, 0);
+        if (state.keyboardHook == nullptr)
+        {
+            UnhookWindowsHookEx(state.mouseHook);
+            state.mouseHook = nullptr;
+            gHookState = nullptr;
+            return false;
+        }
+
+        state.lowLevelHooksActive = true;
+
+        // If Ctrl was already held before hook installation, suspend mouse capture
+        // immediately instead of waiting for another keyboard transition.
+        if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
+            state.ctrlFallbackSuspended = true;
+
+        RefreshWindowsTerminalMouseCapture(state);
+        return true;
+    }
+
+    static void RemoveWindowsTerminalHooks(ConsoleState &state)
+    {
+        state.lowLevelHooksActive = false;
+
+        if (state.keyboardHook != nullptr)
+        {
+            UnhookWindowsHookEx(state.keyboardHook);
+            state.keyboardHook = nullptr;
+        }
+
+        if (state.mouseHook != nullptr)
+        {
+            UnhookWindowsHookEx(state.mouseHook);
+            state.mouseHook = nullptr;
+        }
+
+        if (gHookState == &state)
+            gHookState = nullptr;
+    }
+
+    static void PumpHookMessages()
+    {
+        MSG message{};
+        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+        {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+
     static std::wstring Esc(const wchar_t *suffix)
     {
         std::wstring s;
@@ -373,12 +613,9 @@ namespace
                 return false;
         }
 
-        DWORD inMode = state.originalInMode;
-        inMode |= ENABLE_WINDOW_INPUT;
-        inMode |= ENABLE_MOUSE_INPUT;
-        inMode |= ENABLE_EXTENDED_FLAGS;
-        inMode &= ~ENABLE_QUICK_EDIT_MODE;
-        SetConsoleMode(state.in, inMode);
+        state.windowsTerminal = IsWindowsTerminalSession();
+        if (!ApplySelectorInputMode(state, true))
+            return false;
 
         state.vtEnabled = true;
         return true;
@@ -396,6 +633,8 @@ namespace
 
     static void LeaveVirtualScreen(ConsoleState &state)
     {
+        RemoveWindowsTerminalHooks(state);
+
         if (state.out != INVALID_HANDLE_VALUE)
         {
             WriteWide(state.out, Esc(L"[0m"));
@@ -1010,8 +1249,14 @@ namespace
 
         EnterVirtualScreen(state);
 
+        // Only Windows Terminal uses the hooks. Other terminal hosts retain the
+        // existing Win32 console mouse-event path unchanged.
+        InstallWindowsTerminalHooks(state);
+
         while (running)
         {
+            if (state.lowLevelHooksActive)
+                PumpHookMessages();
             int w = 0;
             int h = 0;
             if (GetVisibleSize(state.out, w, h))
@@ -1025,6 +1270,28 @@ namespace
                     hiddenWidth = std::max(hiddenWidth, visibleWidth);
                     hiddenHeight = std::max(hiddenHeight, visibleHeight);
                     fullDirty = true;
+                }
+            }
+
+            if (state.lowLevelHooksActive)
+            {
+                const LONG wheelDelta = InterlockedExchange(&state.pendingWheelDelta, 0);
+                if (wheelDelta != 0)
+                {
+                    state.wheelRemainder += static_cast<int>(wheelDelta);
+                    const int notches = state.wheelRemainder / WHEEL_DELTA;
+                    state.wheelRemainder %= WHEEL_DELTA;
+
+                    if (notches != 0)
+                    {
+                        const int beforeWheel = selectedIndex;
+                        selectedIndex = ClampInt(
+                            selectedIndex - notches,
+                            0,
+                            static_cast<int>(rows.size()) - 1);
+                        if (selectedIndex != beforeWheel)
+                            selectionDirty = true;
+                    }
                 }
             }
 
@@ -1064,9 +1331,33 @@ namespace
             lastVirtualLeft = virtualLeft;
             lastSelectedIndex = selectedIndex;
 
-            DWORD waitResult = WaitForSingleObject(state.in, 40);
+            DWORD waitResult = WAIT_TIMEOUT;
+            if (state.lowLevelHooksActive)
+            {
+                HANDLE handles[] = {state.in};
+                waitResult = MsgWaitForMultipleObjects(
+                    1,
+                    handles,
+                    FALSE,
+                    40,
+                    QS_ALLINPUT);
+
+                if (waitResult == WAIT_OBJECT_0 + 1)
+                {
+                    PumpHookMessages();
+                    continue;
+                }
+            }
+            else
+            {
+                waitResult = WaitForSingleObject(state.in, 40);
+            }
+
             if (waitResult != WAIT_OBJECT_0)
                 continue;
+
+            if (state.lowLevelHooksActive)
+                PumpHookMessages();
 
             std::vector<INPUT_RECORD> events;
             ReadAllInput(state, events);
@@ -1088,6 +1379,12 @@ namespace
 
                     if (mouse.dwEventFlags == MOUSE_WHEELED)
                     {
+                        // In Windows Terminal, ordinary wheel is consumed by
+                        // WH_MOUSE_LL and Ctrl+wheel is passed through while mouse
+                        // capture is suspended. Ignore any stale/duplicate record.
+                        if (state.lowLevelHooksActive)
+                            continue;
+
                         short wheelDelta = static_cast<short>((mouse.dwButtonState >> 16) & 0xFFFF);
                         int wheelStep = 1;
                         int beforeWheel = selectedIndex;
