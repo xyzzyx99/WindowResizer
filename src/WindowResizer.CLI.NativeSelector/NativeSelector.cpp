@@ -114,11 +114,18 @@ namespace
         volatile LONG hookInstallSucceeded = 0;
         HWND terminalWindow = nullptr;
         volatile LONG pendingWheelDelta = 0;
+        volatile LONG ordinaryWheelConsumed = 0;
+        volatile LONG ctrlWheelPassed = 0;
+        volatile LONG debugGeneration = 0;
+        volatile LONG vtMouseRequested = 0;
+        volatile LONG vtMouseEffective = 0;
+        volatile LONG lastDebugEvent = 0;
         int wheelRemainder = 0;
         bool leftCtrlDown = false;
         bool rightCtrlDown = false;
         bool genericCtrlDown = false;
         bool ctrlFallbackSuspended = false;
+        bool mKeyDown = false;
     };
 
     static ConsoleState *gHookState = nullptr;
@@ -323,13 +330,55 @@ namespace
                state.genericCtrlDown || state.ctrlFallbackSuspended;
     }
 
-    static bool ApplySelectorInputMode(ConsoleState &state, bool enableMouseCapture)
+    enum DebugEvent
+    {
+        DebugEventStart = 0,
+        DebugEventMOn = 1,
+        DebugEventMOff = 2,
+        DebugEventCtrlDown = 3,
+        DebugEventCtrlUp = 4,
+        DebugEventCtrlWheelPassed = 5,
+        DebugEventOrdinaryWheelConsumed = 6,
+        DebugEventClickCaptureOn = 7,
+        DebugEventClickCaptureOff = 8,
+        DebugEventModeFailed = 9
+    };
+
+    static void RecordDebugEvent(ConsoleState &state, DebugEvent event)
+    {
+        InterlockedExchange(&state.lastDebugEvent, static_cast<LONG>(event));
+        InterlockedExchangeAdd(&state.debugGeneration, 1);
+    }
+
+    static bool IsVtMouseRequested(const ConsoleState &state)
+    {
+        return InterlockedCompareExchange(
+                   const_cast<volatile LONG *>(&state.vtMouseRequested),
+                   0,
+                   0) != 0;
+    }
+
+    static bool IsVtMouseEffective(const ConsoleState &state)
+    {
+        return InterlockedCompareExchange(
+                   const_cast<volatile LONG *>(&state.vtMouseEffective),
+                   0,
+                   0) != 0;
+    }
+
+    static bool ApplySelectorInputMode(
+        ConsoleState &state,
+        bool enableVtInput,
+        bool enableMouseCapture)
     {
         DWORD mode = state.originalInMode;
         mode |= ENABLE_WINDOW_INPUT;
         mode |= ENABLE_EXTENDED_FLAGS;
         mode &= ~ENABLE_QUICK_EDIT_MODE;
-        if (state.windowsTerminal)
+
+        if (enableVtInput)
+            mode |= ENABLE_VIRTUAL_TERMINAL_INPUT;
+        else
             mode &= ~ENABLE_VIRTUAL_TERMINAL_INPUT;
 
         if (enableMouseCapture)
@@ -338,7 +387,10 @@ namespace
             mode &= ~ENABLE_MOUSE_INPUT;
 
         if (!SetConsoleMode(state.in, mode))
+        {
+            RecordDebugEvent(state, DebugEventModeFailed);
             return false;
+        }
 
         state.mouseCaptureEnabled = enableMouseCapture;
         return true;
@@ -361,11 +413,76 @@ namespace
         }
     }
 
+    static bool IsCtrlSuspendingVtMouse(const ConsoleState &state)
+    {
+        return IsCtrlSuspendingMouseCapture(state);
+    }
+
+    static void SetVtMouseEffective(ConsoleState &state, bool enabled)
+    {
+        if (!state.windowsTerminal)
+            return;
+
+        if (enabled == IsVtMouseEffective(state))
+            return;
+
+        CancelClickCaptureTimer(state);
+
+        if (enabled)
+        {
+            // Match the working demo: VT input is enabled, Win32 mouse input is
+            // disabled, then SGR mouse reporting is enabled.
+            if (!ApplySelectorInputMode(state, true, false))
+                return;
+
+            WriteWide(state.out, L"\x1b[?1006h\x1b[?1000h");
+            state.mouseCaptureEnabled = false;
+            InterlockedExchange(&state.vtMouseEffective, 1);
+        }
+        else
+        {
+            // Disable reporting before returning Ctrl+wheel to Windows Terminal.
+            WriteWide(
+                state.out,
+                L"\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l");
+
+            if (!ApplySelectorInputMode(state, false, false))
+                return;
+
+            state.mouseCaptureEnabled = false;
+            InterlockedExchange(&state.vtMouseEffective, 0);
+        }
+
+        InterlockedExchangeAdd(&state.debugGeneration, 1);
+    }
+
+    static void RefreshVtMouseState(ConsoleState &state)
+    {
+        const bool shouldBeEffective =
+            IsVtMouseRequested(state) && !IsCtrlSuspendingVtMouse(state);
+        SetVtMouseEffective(state, shouldBeEffective);
+    }
+
+    static void SetVtMouseRequested(ConsoleState &state, bool enabled)
+    {
+        InterlockedExchange(&state.vtMouseRequested, enabled ? 1 : 0);
+        RecordDebugEvent(state, enabled ? DebugEventMOn : DebugEventMOff);
+        RefreshVtMouseState(state);
+    }
+
+    static void ToggleVtMouseRequested(ConsoleState &state)
+    {
+        SetVtMouseRequested(state, !IsVtMouseRequested(state));
+    }
+
     static void DisableWindowsTerminalMouseCapture(ConsoleState &state)
     {
         CancelClickCaptureTimer(state);
         if (state.mouseCaptureEnabled)
-            ApplySelectorInputMode(state, false);
+        {
+            ApplySelectorInputMode(state, IsVtMouseEffective(state), false);
+            RecordDebugEvent(state, DebugEventClickCaptureOff);
+        }
     }
 
     static void SuspendWindowsTerminalMouseModesForCtrl(ConsoleState &state)
@@ -373,42 +490,35 @@ namespace
         if (!state.windowsTerminal)
             return;
 
-        // Reproduce the successful demo's Ctrl transition at the moment Ctrl is
-        // pressed. Disabling the modes only at selector startup is not equivalent:
-        // Windows Terminal may still have an effective VT mouse mode while the
-        // selector is running. Keep VT output processing enabled; only mouse
-        // reporting/input is disabled.
+        // This is the exact demo transition, made unconditional because this
+        // selector can temporarily enable Win32 click capture. Requested state is
+        // retained, but VT mouse reporting, VT input, and Win32 mouse input are all
+        // forced off before Ctrl+wheel is passed to Windows Terminal.
         CancelClickCaptureTimer(state);
         WriteWide(
             state.out,
             L"\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l");
-
-        DWORD mode = 0;
-        if (GetConsoleMode(state.in, &mode))
-        {
-            mode |= ENABLE_WINDOW_INPUT;
-            mode |= ENABLE_EXTENDED_FLAGS;
-            mode &= ~ENABLE_QUICK_EDIT_MODE;
-            mode &= ~ENABLE_MOUSE_INPUT;
-            mode &= ~ENABLE_VIRTUAL_TERMINAL_INPUT;
-
-            if (SetConsoleMode(state.in, mode))
-            {
-                state.mouseCaptureEnabled = false;
-                return;
-            }
-        }
-
-        // Preserve the established input-mode fallback if querying the live mode
-        // fails for an unusual console host.
-        ApplySelectorInputMode(state, false);
+        ApplySelectorInputMode(state, false, false);
+        state.mouseCaptureEnabled = false;
+        InterlockedExchange(&state.vtMouseEffective, 0);
+        RecordDebugEvent(state, DebugEventCtrlDown);
     }
 
     static void BeginWindowsTerminalClickCapture(ConsoleState &state)
     {
         CancelClickCaptureTimer(state);
-        if (!IsCtrlSuspendingMouseCapture(state) && !state.mouseCaptureEnabled)
-            ApplySelectorInputMode(state, true);
+
+        // When diagnostic VT mouse reporting is ON, input is emitted as VT mouse
+        // sequences and this selector does not parse them. Do not mix that mode
+        // with Win32 MOUSE_EVENT capture; press M to turn VT mouse reporting OFF
+        // before testing click/double-click selection.
+        if (!IsCtrlSuspendingMouseCapture(state) &&
+            !IsVtMouseEffective(state) &&
+            !state.mouseCaptureEnabled)
+        {
+            if (ApplySelectorInputMode(state, false, true))
+                RecordDebugEvent(state, DebugEventClickCaptureOn);
+        }
     }
 
     static void ScheduleWindowsTerminalClickCaptureOff(ConsoleState &state)
@@ -463,6 +573,8 @@ namespace
                             state->ctrlFallbackSuspended = true;
 
                         SuspendWindowsTerminalMouseModesForCtrl(*state);
+                        InterlockedExchangeAdd(&state->ctrlWheelPassed, 1);
+                        RecordDebugEvent(*state, DebugEventCtrlWheelPassed);
 
                         // Never consume Ctrl+wheel. Windows Terminal receives it
                         // while all application mouse modes are off and zooms text.
@@ -471,7 +583,11 @@ namespace
 
                     const SHORT delta = static_cast<SHORT>((mouse->mouseData >> 16) & 0xFFFF);
                     if (delta != 0)
+                    {
                         InterlockedExchangeAdd(&state->pendingWheelDelta, static_cast<LONG>(delta));
+                        InterlockedExchangeAdd(&state->ordinaryWheelConsumed, 1);
+                        RecordDebugEvent(*state, DebugEventOrdinaryWheelConsumed);
+                    }
 
                     // Ordinary wheel belongs to the selector. Consuming it here
                     // prevents Terminal scrollback and duplicate console events.
@@ -489,12 +605,19 @@ namespace
         if (code == HC_ACTION && state != nullptr && AreWindowsTerminalHooksActive(*state))
         {
             const auto *key = reinterpret_cast<const KBDLLHOOKSTRUCT *>(lParam);
-            if (key != nullptr && IsCtrlVirtualKey(key->vkCode))
+            if (key != nullptr)
             {
                 const bool keyDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
                 const bool keyUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
-                if (keyDown || keyUp)
+
+                if (IsCtrlVirtualKey(key->vkCode) && (keyDown || keyUp))
                 {
+                    // Do not react to Ctrl used in another application. Key-up is
+                    // still accepted globally so a Ctrl held while focus changes
+                    // cannot leave this selector permanently suspended.
+                    if (keyDown && !IsTerminalForeground(*state))
+                        return CallNextHookEx(nullptr, code, wParam, lParam);
+
                     const bool down = keyDown;
                     if (key->vkCode == VK_LCONTROL)
                         state->leftCtrlDown = down;
@@ -505,16 +628,32 @@ namespace
 
                     if (keyDown)
                     {
-                        // Match the working demo exactly: Ctrl immediately sends
-                        // the VT mouse-off sequences and clears both VT input and
-                        // Win32 mouse capture before any wheel event can arrive.
+                        // Effective VT mouse reporting/input is disabled before
+                        // Ctrl+wheel reaches Windows Terminal.
                         SuspendWindowsTerminalMouseModesForCtrl(*state);
                     }
                     else
                     {
                         state->ctrlFallbackSuspended = false;
-                        // Do not restore capture on Ctrl-up. The mouse-off state is
-                        // the normal state; the next click enables it temporarily.
+                        // Restore the state requested with M, exactly as the demo.
+                        RefreshVtMouseState(*state);
+                        RecordDebugEvent(*state, DebugEventCtrlUp);
+                    }
+                }
+
+                if (key->vkCode == 'M' && (keyDown || keyUp))
+                {
+                    if (keyDown)
+                    {
+                        if (!state->mKeyDown && IsTerminalForeground(*state))
+                        {
+                            state->mKeyDown = true;
+                            ToggleVtMouseRequested(*state);
+                        }
+                    }
+                    else
+                    {
+                        state->mKeyDown = false;
                     }
                 }
             }
@@ -579,9 +718,15 @@ namespace
             if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
                 state->ctrlFallbackSuspended = true;
 
-            // The default Windows Terminal state matches the demo: no VT input
-            // and no Win32 console mouse capture. Clicks opt in temporarily.
-            DisableWindowsTerminalMouseCapture(*state);
+            // Start exactly like the demo: M-requested OFF, effective OFF,
+            // ENABLE_VIRTUAL_TERMINAL_INPUT OFF, and ENABLE_MOUSE_INPUT OFF.
+            InterlockedExchange(&state->vtMouseRequested, 0);
+            InterlockedExchange(&state->vtMouseEffective, 0);
+            WriteWide(
+                state->out,
+                L"\x1b[?1004l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l");
+            ApplySelectorInputMode(*state, false, false);
+            RecordDebugEvent(*state, DebugEventStart);
             InterlockedExchange(&state->hookInstallSucceeded, 1);
         }
 
@@ -612,7 +757,7 @@ namespace
         InterlockedExchange(&state->lowLevelHooksActive, 0);
         CancelClickCaptureTimer(*state);
         if (state->mouseCaptureEnabled)
-            ApplySelectorInputMode(*state, false);
+            ApplySelectorInputMode(*state, false, false);
 
         if (state->keyboardHook != nullptr)
         {
@@ -835,8 +980,15 @@ namespace
         }
 
         state.windowsTerminal = IsWindowsTerminalSession();
-        if (!ApplySelectorInputMode(state, !state.windowsTerminal))
+        const bool preserveOriginalVtInput =
+            (state.originalInMode & ENABLE_VIRTUAL_TERMINAL_INPUT) != 0;
+        if (!ApplySelectorInputMode(
+                state,
+                state.windowsTerminal ? false : preserveOriginalVtInput,
+                !state.windowsTerminal))
+        {
             return false;
+        }
 
         state.vtEnabled = true;
         return true;
@@ -862,6 +1014,8 @@ namespace
 
     static void LeaveVirtualScreen(ConsoleState &state)
     {
+        if (state.windowsTerminal)
+            SetVtMouseRequested(state, false);
         RemoveWindowsTerminalHooks(state);
 
         if (state.out != INVALID_HANDLE_VALUE)
@@ -888,7 +1042,7 @@ namespace
 
     static int StatusRows()
     {
-        return 1;
+        return 2;
     }
 
     static std::wstring CleanOneLine(const wchar_t *text)
@@ -1240,6 +1394,77 @@ namespace
                L". Click moves selection  Double click selects  Wheel moves row";
     }
 
+
+    static const wchar_t *DebugEventName(LONG value)
+    {
+        switch (static_cast<DebugEvent>(value))
+        {
+        case DebugEventMOn:
+            return L"M->ON";
+        case DebugEventMOff:
+            return L"M->OFF";
+        case DebugEventCtrlDown:
+            return L"CTRL-DOWN";
+        case DebugEventCtrlUp:
+            return L"CTRL-UP";
+        case DebugEventCtrlWheelPassed:
+            return L"CTRL-WHEEL-PASS";
+        case DebugEventOrdinaryWheelConsumed:
+            return L"WHEEL-CONSUME";
+        case DebugEventClickCaptureOn:
+            return L"CLICK-CAPTURE-ON";
+        case DebugEventClickCaptureOff:
+            return L"CLICK-CAPTURE-OFF";
+        case DebugEventModeFailed:
+            return L"SETMODE-FAILED";
+        default:
+            return L"START";
+        }
+    }
+
+    static std::wstring BuildDebugText(ConsoleState &state)
+    {
+        DWORD mode = 0;
+        const bool haveMode = GetConsoleMode(state.in, &mode) != FALSE;
+        wchar_t modeText[32]{};
+        if (haveMode)
+            swprintf(modeText, sizeof(modeText) / sizeof(modeText[0]), L"0x%08lX", static_cast<unsigned long>(mode));
+        else
+            wcscpy(modeText, L"ERROR");
+
+        const bool requested = IsVtMouseRequested(state);
+        const bool effective = IsVtMouseEffective(state);
+        const bool ctrl = IsCtrlSuspendingVtMouse(state) ||
+                          ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0);
+        const bool hooks = AreWindowsTerminalHooksActive(state);
+        const bool vtInput = haveMode && (mode & ENABLE_VIRTUAL_TERMINAL_INPUT) != 0;
+        const bool mouseInput = haveMode && (mode & ENABLE_MOUSE_INPUT) != 0;
+        const LONG lastEvent = InterlockedCompareExchange(&state.lastDebugEvent, 0, 0);
+        const LONG ordinary = InterlockedCompareExchange(&state.ordinaryWheelConsumed, 0, 0);
+        const LONG ctrlPassed = InterlockedCompareExchange(&state.ctrlWheelPassed, 0, 0);
+
+        std::wstring text = L" DEBUG M:req=";
+        text += requested ? L"ON" : L"OFF";
+        text += L" eff=";
+        text += effective ? L"ON" :
+                (requested && ctrl ? L"SUSPENDED" : L"OFF");
+        text += L" ctrl=";
+        text += ctrl ? L"1" : L"0";
+        text += L" VTIN=";
+        text += vtInput ? L"1" : L"0";
+        text += L" MOUSE=";
+        text += mouseInput ? L"1" : L"0";
+        text += L" hooks=";
+        text += hooks ? L"1" : L"0";
+        text += L" mode=";
+        text += modeText;
+        text += L" last=";
+        text += DebugEventName(lastEvent);
+        text += L" wheel=" + std::to_wstring(ordinary);
+        text += L" ctrlpass=" + std::to_wstring(ctrlPassed);
+        return text;
+    }
+
     static void AppendRowBySourceIndex(
         std::wstring &batch,
         const std::vector<Row> &rows,
@@ -1269,7 +1494,8 @@ namespace
         }
     }
 
-    static void AppendStatusLine(
+    static void AppendStatusLines(
+        ConsoleState &state,
         std::wstring &batch,
         const std::vector<Row> &rows,
         int selectedIndex,
@@ -1283,14 +1509,50 @@ namespace
         if (visibleHeight <= 0)
             return;
 
-        int statusY = visibleHeight - 1;
+        const int selectionY = std::max(0, visibleHeight - 2);
+        const int debugY = visibleHeight - 1;
+
         AppendPlainLine(
             batch,
-            statusY,
+            selectionY,
             visibleWidth,
             BuildStatusText(rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight),
             Style::Status,
             true);
+
+        AppendPlainLine(
+            batch,
+            debugY,
+            visibleWidth,
+            BuildDebugText(state),
+            Style::Status,
+            true);
+    }
+
+    static void RenderStatusDelta(
+        ConsoleState &state,
+        const std::vector<Row> &rows,
+        int selectedIndex,
+        int virtualTop,
+        int virtualLeft,
+        int visibleWidth,
+        int visibleHeight,
+        int hiddenWidth,
+        int hiddenHeight)
+    {
+        std::wstring batch;
+        AppendStatusLines(
+            state,
+            batch,
+            rows,
+            selectedIndex,
+            virtualTop,
+            virtualLeft,
+            visibleWidth,
+            visibleHeight,
+            hiddenWidth,
+            hiddenHeight);
+        FlushBatch(state, batch);
     }
 
     static void RenderVirtualBuffer(
@@ -1311,7 +1573,7 @@ namespace
         batch.reserve(static_cast<size_t>(visibleWidth) * static_cast<size_t>(std::max(visibleHeight, 1)) * 2);
 
         (void)virtualLeft;
-        AppendPlainLine(batch, 0, visibleWidth, L" Keyboard: Up/Down move  PgUp/PgDn page  Home/End  Left/Right pan  Enter select  Esc cancel", Style::Status, true);
+        AppendPlainLine(batch, 0, visibleWidth, L" Keyboard: Up/Down move  PgUp/PgDn page  Left/Right pan  M toggle VT mouse  Enter select  Esc cancel", Style::Status, true);
 
         int listTop = HeaderRows();
         int listHeight = std::max(0, visibleHeight - HeaderRows() - StatusRows());
@@ -1331,7 +1593,7 @@ namespace
             }
         }
 
-        AppendStatusLine(batch, rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
+        AppendStatusLines(state, batch, rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
         AppendMoveTo(batch, std::max(0, visibleHeight - 1), 0);
         FlushBatch(state, batch);
     }
@@ -1358,7 +1620,7 @@ namespace
             AppendRowBySourceIndex(batch, rows, oldSelectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, selectedIndex);
 
         AppendRowBySourceIndex(batch, rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, selectedIndex);
-        AppendStatusLine(batch, rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
+        AppendStatusLines(state, batch, rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
         AppendMoveTo(batch, std::max(0, visibleHeight - 1), 0);
         FlushBatch(state, batch);
     }
@@ -1473,6 +1735,8 @@ namespace
         int lastSelectedIndex = -1;
         bool fullDirty = true;
         bool selectionDirty = false;
+        bool statusDirty = true;
+        LONG lastDebugGeneration = -1;
         bool running = true;
         bool accepted = false;
 
@@ -1482,10 +1746,18 @@ namespace
         // existing Win32 console mouse-event path unchanged. If hook installation
         // fails, restore the original captured-mouse behavior as a safe fallback.
         if (state.windowsTerminal && !InstallWindowsTerminalHooks(state))
-            ApplySelectorInputMode(state, true);
+            ApplySelectorInputMode(state, false, true);
 
         while (running)
         {
+            const LONG debugGeneration =
+                InterlockedCompareExchange(&state.debugGeneration, 0, 0);
+            if (debugGeneration != lastDebugGeneration)
+            {
+                lastDebugGeneration = debugGeneration;
+                statusDirty = true;
+            }
+
             int w = 0;
             int h = 0;
             if (GetVisibleSize(state.out, w, h))
@@ -1547,11 +1819,18 @@ namespace
                 RenderVirtualBuffer(state, rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
                 fullDirty = false;
                 selectionDirty = false;
+                statusDirty = false;
             }
             else if (selectionDirty || selectedIndex != lastSelectedIndex)
             {
                 RenderSelectionDelta(state, rows, lastSelectedIndex, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
                 selectionDirty = false;
+                statusDirty = false;
+            }
+            else if (statusDirty)
+            {
+                RenderStatusDelta(state, rows, selectedIndex, virtualTop, virtualLeft, visibleWidth, visibleHeight, hiddenWidth, hiddenHeight);
+                statusDirty = false;
             }
 
             ForceHideCursor(state);
@@ -1703,6 +1982,12 @@ namespace
                 case VK_RIGHT:
                     virtualLeft = std::min(maxLeft, virtualLeft + 4);
                     fullDirty = true;
+                    break;
+
+                case 'M':
+                    if (state.windowsTerminal && !AreWindowsTerminalHooksActive(state))
+                        ToggleVtMouseRequested(state);
+                    statusDirty = true;
                     break;
 
                 default:
