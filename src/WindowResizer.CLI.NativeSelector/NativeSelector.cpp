@@ -98,12 +98,13 @@ namespace
         bool vtEnabled = false;
         bool altScreen = false;
 
-        // Windows Terminal keeps the existing VT renderer, but ordinary wheel
-        // input is taken from WH_MOUSE_LL so Ctrl+wheel can remain a terminal UI
-        // action. Console mouse capture is suspended only while Ctrl is held.
+        // Windows Terminal keeps the existing VT renderer. Mouse reporting and
+        // console mouse capture remain off by default, matching the successful
+        // low-level-hook demo. Capture is enabled only briefly for click sequences.
         bool windowsTerminal = false;
         volatile LONG lowLevelHooksActive = 0;
         bool mouseCaptureEnabled = false;
+        uintptr_t clickCaptureTimer = 0;
         HHOOK mouseHook = nullptr;
         HHOOK keyboardHook = nullptr;
         HANDLE hookThread = nullptr;
@@ -351,50 +352,95 @@ namespace
                    0) != 0;
     }
 
-    static void RefreshWindowsTerminalMouseCapture(ConsoleState &state)
+    static void CancelClickCaptureTimer(ConsoleState &state)
     {
-        if (!AreWindowsTerminalHooksActive(state))
-            return;
+        if (state.clickCaptureTimer != 0)
+        {
+            KillTimer(nullptr, state.clickCaptureTimer);
+            state.clickCaptureTimer = 0;
+        }
+    }
 
-        const bool shouldEnable = !IsCtrlSuspendingMouseCapture(state);
-        if (shouldEnable != state.mouseCaptureEnabled)
-            ApplySelectorInputMode(state, shouldEnable);
+    static void DisableWindowsTerminalMouseCapture(ConsoleState &state)
+    {
+        CancelClickCaptureTimer(state);
+        if (state.mouseCaptureEnabled)
+            ApplySelectorInputMode(state, false);
+    }
+
+    static void BeginWindowsTerminalClickCapture(ConsoleState &state)
+    {
+        CancelClickCaptureTimer(state);
+        if (!IsCtrlSuspendingMouseCapture(state) && !state.mouseCaptureEnabled)
+            ApplySelectorInputMode(state, true);
+    }
+
+    static void ScheduleWindowsTerminalClickCaptureOff(ConsoleState &state)
+    {
+        CancelClickCaptureTimer(state);
+
+        // Keep capture alive across the second click of a double-click. It is
+        // disabled shortly after the system double-click interval expires.
+        const UINT delay = GetDoubleClickTime() + 50;
+        state.clickCaptureTimer = static_cast<uintptr_t>(SetTimer(
+            nullptr,
+            0,
+            delay,
+            nullptr));
+
+        if (state.clickCaptureTimer == 0)
+            DisableWindowsTerminalMouseCapture(state);
     }
 
     static LRESULT CALLBACK LowLevelMouseProc(int code, WPARAM wParam, LPARAM lParam)
     {
         ConsoleState *state = gHookState;
-        if (code == HC_ACTION && state != nullptr && AreWindowsTerminalHooksActive(*state) &&
-            wParam == WM_MOUSEWHEEL)
+        if (code == HC_ACTION && state != nullptr && AreWindowsTerminalHooksActive(*state))
         {
             const auto *mouse = reinterpret_cast<const MSLLHOOKSTRUCT *>(lParam);
             if (mouse != nullptr && MousePointInsideTerminal(*state, mouse->pt))
             {
-                const bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
-                if (ctrlDown)
+                if (wParam == WM_LBUTTONDOWN)
                 {
-                    // The keyboard hook normally disables console mouse capture
-                    // before the wheel event. This also covers Ctrl being held
-                    // before the selector or Windows Terminal gains focus.
-                    if (!IsCtrlSuspendingMouseCapture(*state))
-                    {
-                        state->ctrlFallbackSuspended = true;
-                        RefreshWindowsTerminalMouseCapture(*state);
-                    }
-
-                    // Never consume Ctrl+wheel. Windows Terminal receives it and
-                    // performs its configured text-zoom action.
+                    // Enable Win32 mouse capture before Windows Terminal handles
+                    // the click, then leave the event unconsumed so the existing
+                    // MOUSE_EVENT click/double-click selector logic still works.
+                    BeginWindowsTerminalClickCapture(*state);
                     return CallNextHookEx(nullptr, code, wParam, lParam);
                 }
 
-                const SHORT delta = static_cast<SHORT>((mouse->mouseData >> 16) & 0xFFFF);
-                if (delta != 0)
-                    InterlockedExchangeAdd(&state->pendingWheelDelta, static_cast<LONG>(delta));
+                if (wParam == WM_LBUTTONUP)
+                {
+                    if (state->mouseCaptureEnabled)
+                        ScheduleWindowsTerminalClickCaptureOff(*state);
+                    return CallNextHookEx(nullptr, code, wParam, lParam);
+                }
 
-                // Ordinary wheel belongs to the selector. Consuming it here keeps
-                // Windows Terminal from also scrolling its own scrollback or
-                // creating a duplicate console MOUSE_EVENT.
-                return 1;
+                if (wParam == WM_MOUSEWHEEL)
+                {
+                    const bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+                    if (ctrlDown)
+                    {
+                        // The keyboard hook normally disables capture before the
+                        // wheel event. This fallback covers Ctrl already being held.
+                        if (!IsCtrlSuspendingMouseCapture(*state))
+                            state->ctrlFallbackSuspended = true;
+
+                        DisableWindowsTerminalMouseCapture(*state);
+
+                        // Never consume Ctrl+wheel. Windows Terminal receives it
+                        // while all application mouse modes are off and zooms text.
+                        return CallNextHookEx(nullptr, code, wParam, lParam);
+                    }
+
+                    const SHORT delta = static_cast<SHORT>((mouse->mouseData >> 16) & 0xFFFF);
+                    if (delta != 0)
+                        InterlockedExchangeAdd(&state->pendingWheelDelta, static_cast<LONG>(delta));
+
+                    // Ordinary wheel belongs to the selector. Consuming it here
+                    // prevents Terminal scrollback and duplicate console events.
+                    return 1;
+                }
             }
         }
 
@@ -421,12 +467,18 @@ namespace
                     else
                         state->genericCtrlDown = down;
 
-                    if (keyUp)
+                    if (keyDown)
+                    {
+                        // Match the working demo: Ctrl immediately returns Windows
+                        // Terminal to the mouse-off state before any wheel event.
+                        DisableWindowsTerminalMouseCapture(*state);
+                    }
+                    else
+                    {
                         state->ctrlFallbackSuspended = false;
-
-                    // Do not consume Ctrl. Only suspend/restore console mouse
-                    // capture before Windows Terminal processes the next wheel.
-                    RefreshWindowsTerminalMouseCapture(*state);
+                        // Do not restore capture on Ctrl-up. The mouse-off state is
+                        // the normal state; the next click enables it temporarily.
+                    }
                 }
             }
         }
@@ -434,11 +486,19 @@ namespace
         return CallNextHookEx(nullptr, code, wParam, lParam);
     }
 
-    static void PumpCurrentThreadMessages()
+    static void PumpCurrentThreadMessages(ConsoleState &state)
     {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
         {
+            if (message.message == WM_TIMER &&
+                state.clickCaptureTimer != 0 &&
+                message.wParam == state.clickCaptureTimer)
+            {
+                DisableWindowsTerminalMouseCapture(state);
+                continue;
+            }
+
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
@@ -482,7 +542,9 @@ namespace
             if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0)
                 state->ctrlFallbackSuspended = true;
 
-            RefreshWindowsTerminalMouseCapture(*state);
+            // The default Windows Terminal state matches the demo: no VT input
+            // and no Win32 console mouse capture. Clicks opt in temporarily.
+            DisableWindowsTerminalMouseCapture(*state);
             InterlockedExchange(&state->hookInstallSucceeded, 1);
         }
 
@@ -504,13 +566,16 @@ namespace
                     break;
 
                 if (waitResult == WAIT_OBJECT_0 + 1)
-                    PumpCurrentThreadMessages();
+                    PumpCurrentThreadMessages(*state);
                 else
                     break;
             }
         }
 
         InterlockedExchange(&state->lowLevelHooksActive, 0);
+        CancelClickCaptureTimer(*state);
+        if (state->mouseCaptureEnabled)
+            ApplySelectorInputMode(*state, false);
 
         if (state->keyboardHook != nullptr)
         {
@@ -733,7 +798,7 @@ namespace
         }
 
         state.windowsTerminal = IsWindowsTerminalSession();
-        if (!ApplySelectorInputMode(state, true))
+        if (!ApplySelectorInputMode(state, !state.windowsTerminal))
             return false;
 
         state.vtEnabled = true;
@@ -742,6 +807,14 @@ namespace
 
     static void EnterVirtualScreen(ConsoleState &state)
     {
+        if (state.windowsTerminal)
+        {
+            // Start in the same mouse-off state as the successful demo. This also
+            // clears any stale terminal mouse-reporting mode inherited from a
+            // previous application without disabling VT output rendering.
+            WriteWide(state.out, L"\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l");
+        }
+
         WriteWide(state.out, Esc(L"[?1049h")); // alternate screen buffer
         ForceHideCursor(state);                // hide VT and Win32 console cursor
         WriteWide(state.out, Esc(L"[?7l"));    // disable auto-wrap; prevents row joining in Windows Terminal
@@ -1369,8 +1442,10 @@ namespace
         EnterVirtualScreen(state);
 
         // Only Windows Terminal uses the hooks. Other terminal hosts retain the
-        // existing Win32 console mouse-event path unchanged.
-        InstallWindowsTerminalHooks(state);
+        // existing Win32 console mouse-event path unchanged. If hook installation
+        // fails, restore the original captured-mouse behavior as a safe fallback.
+        if (state.windowsTerminal && !InstallWindowsTerminalHooks(state))
+            ApplySelectorInputMode(state, true);
 
         while (running)
         {
